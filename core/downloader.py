@@ -39,17 +39,19 @@ def _detect_ffmpeg() -> str:
     Tự động phát hiện đường dẫn ffmpeg.
 
     Tìm kiếm theo thứ tự:
-    1. Thư mục ứng dụng hiện tại (cho bản đóng gói PyInstaller).
+    1. Thư mục ứng dụng hiện tại (cho bản đóng gói Nuitka/PyInstaller).
     2. Biến môi trường PATH.
 
     Returns:
         Đường dẫn thư mục chứa ffmpeg, hoặc chuỗi rỗng nếu không tìm thấy.
     """
-    # Kiểm tra trong thư mục ứng dụng
-    app_dir = os.path.dirname(os.path.abspath(__file__))
+    from core.security import get_base_path
+
+    # Kiểm tra trong thư mục ứng dụng và thư mục cha
+    app_dir = get_base_path()
     parent_dir = os.path.dirname(app_dir)
 
-    for search_dir in [parent_dir, app_dir]:
+    for search_dir in [app_dir, parent_dir]:
         ffmpeg_exe = os.path.join(search_dir, "ffmpeg.exe")
         ffmpeg_bin = os.path.join(search_dir, "ffmpeg")
         if os.path.isfile(ffmpeg_exe) or os.path.isfile(ffmpeg_bin):
@@ -142,7 +144,8 @@ def _get_tiktok_douyin_opts() -> Dict[str, Any]:
     - Độ phân giải cao nhất khả dụng.
     """
     return {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        # Tối ưu: Lấy bản H.264 (avc) để xem trên Windows, ưu tiên bản đã gộp sẵn (best) hoặc tự gộp
+        "format": "best[vcodec*=avc]/bestvideo[vcodec*=avc]+bestaudio/best[ext=mp4]/best",
         "merge_output_format": "mp4",
         # Thêm referer để vượt qua kiểm tra nguồn
         "http_headers": {

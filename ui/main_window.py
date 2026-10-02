@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
     # ═══════════════════════ THIẾT LẬP CỬA SỔ ═══════════════════════
 
     def _setup_window(self) -> None:
-        self.setWindowTitle("OmniGrab — Công Cụ Tải Video Hàng Loạt | TikTok · Douyin · Facebook")
+        self.setWindowTitle("OmniGrab — Công Cụ Tải Video Hàng Loạt | TikTok · Douyin · Facebook · YouTube")
         self.setMinimumSize(1060, 640)
         self.resize(1160, 720)
 
@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         # URL text area
         self._url_input = QPlainTextEdit()
         self._url_input.setPlaceholderText(
-            "Dán danh sách liên kết TikTok, Douyin, Facebook vào đây...\n\n"
+            "Dán danh sách liên kết TikTok, Douyin, Facebook, YouTube vào đây...\n\n"
             "Hỗ trợ cả văn bản chia sẻ kèm link, ví dụ:\n"
             '  7.12 复制打开抖音 https://v.douyin.com/xxxxx/\n'
             '  https://www.tiktok.com/@user/video/1234567890'
@@ -481,7 +481,7 @@ class MainWindow(QMainWindow):
         if not urls:
             QMessageBox.warning(self, "Cảnh báo",
                 "Không tìm thấy liên kết hợp lệ nào!\n\n"
-                "Hãy dán ít nhất một liên kết TikTok, Douyin hoặc Facebook.")
+                "Hãy dán ít nhất một liên kết TikTok, Douyin, Facebook hoặc YouTube.")
             return
 
         output_dir = self._output_dir_input.text().strip()
@@ -693,6 +693,8 @@ class MainWindow(QMainWindow):
             return "DOUYIN"
         elif "facebook" in msg_lower or "fb.watch" in msg_lower:
             return "FACEBOOK"
+        elif "youtube" in msg_lower or "youtu.be" in msg_lower:
+            return "YOUTUBE"
         elif "tiến độ" in msg_lower or "tốc độ" in msg_lower or "percent" in msg_lower:
             return "TIẾN ĐỘ"
         elif any(k in msg_lower for k in ("khởi", "sẵn sàng", "hoàn tất", "dừng", "hệ thống")):

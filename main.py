@@ -19,9 +19,15 @@ from PyQt6.QtGui import QFont, QIcon
 from ui.main_window import MainWindow
 from ui.styles import get_app_stylesheet
 
+from core.security import run_security_checks, get_resource_path
+
 
 def main() -> None:
     """Khởi chạy ứng dụng OmniGrab."""
+    
+    # Kích hoạt các lớp bảo vệ trước khi nạp giao diện
+    run_security_checks()
+    
     # Đặt App User Model ID cho Windows — bắt buộc để taskbar hiển thị đúng icon
     try:
         import ctypes
@@ -36,10 +42,9 @@ def main() -> None:
 
     app = QApplication(sys.argv)
 
-    # Thiết lập icon ứng dụng từ assets/
-    _base_dir = os.path.dirname(os.path.abspath(__file__))
-    _icon_ico = os.path.join(_base_dir, "assets", "icon.ico")
-    _icon_png = os.path.join(_base_dir, "assets", "icon.png")
+    # Thiết lập icon ứng dụng (tương thích Nuitka/PyInstaller)
+    _icon_ico = get_resource_path("assets/icon.ico")
+    _icon_png = get_resource_path("assets/icon.png")
 
     # Ưu tiên .ico (nhiều kích thước, Windows nhận tốt hơn), fallback .png
     _icon_path = _icon_ico if os.path.isfile(_icon_ico) else _icon_png

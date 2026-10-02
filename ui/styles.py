@@ -58,6 +58,7 @@ COLORS = {
     "platform_tiktok": "#ec4899",
     "platform_douyin": "#22c55e",
     "platform_facebook": "#3b82f6",
+    "platform_youtube": "#ef4444",
     "platform_system": "#06b6d4",
     "platform_progress": "#f59e0b",
     # Scrollbar
@@ -73,6 +74,7 @@ PLATFORM_COLORS = {
     "TIKTOK": COLORS["platform_tiktok"],
     "DOUYIN": COLORS["platform_douyin"],
     "FACEBOOK": COLORS["platform_facebook"],
+    "YOUTUBE": COLORS["platform_youtube"],
     "HỆ THỐNG": COLORS["platform_system"],
     "TIẾN ĐỘ": COLORS["platform_progress"],
     "LỖI": COLORS["accent_red"],

@@ -34,6 +34,10 @@ _SUPPORTED_DOMAINS: tuple[str, ...] = (
     "www.facebook.com",
     "m.facebook.com",
     "web.facebook.com",
+    "youtube.com",
+    "youtu.be",
+    "www.youtube.com",
+    "m.youtube.com",
 )
 
 
@@ -61,6 +65,7 @@ def extract_urls(raw_text: str) -> List[str]:
     for url in found_urls:
         url = url.rstrip("/.,;:!?)")
         if _is_supported_url(url):
+            url = _normalize_url(url)
             cleaned.append(url)
 
     # Loại bỏ trùng lặp, giữ nguyên thứ tự xuất hiện
@@ -107,6 +112,26 @@ def read_urls_from_file(file_path: str) -> List[str]:
         content = path.read_text(encoding="latin-1")
 
     return extract_urls(content)
+
+
+def _normalize_url(url: str) -> str:
+    """
+    Chuẩn hóa URL trước khi tải (ví dụ: bóc tách modal_id của Douyin).
+    
+    Args:
+        url: URL gốc.
+        
+    Returns:
+        URL đã được chuẩn hóa.
+    """
+    # Xử lý link Douyin dạng modal_id: https://www.douyin.com/jingxuan?modal_id=7659636795000799397
+    if "douyin.com" in url and "modal_id=" in url:
+        match = re.search(r'modal_id=(\d+)', url)
+        if match:
+            video_id = match.group(1)
+            return f"https://www.douyin.com/video/{video_id}"
+            
+    return url
 
 
 def _is_supported_url(url: str) -> bool:

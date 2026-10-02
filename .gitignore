@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.Python
+
+# Môi trường ảo
+venv/
+.venv/
+env/
+.env/
+
+# PyInstaller output
+build/
+dist/
+*.spec
+
+# Logs & cache
+*.log
+.cache/
+.mypy_cache/
+.ruff_cache/
+.pyrefly/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# File tạm
+*.tmp
+*.bak
+danh_sach_loi.txt

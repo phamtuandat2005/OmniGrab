@@ -39,3 +39,11 @@ desktop.ini
 *.tmp
 *.bak
 danh_sach_loi.txt
+
+# Executables
+*.exe
+
+# Nuitka
+*.build/
+*.dist/
+nuitka-crash-report.xml

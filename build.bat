@@ -89,7 +89,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [2/3] Bat dau bien dich ma nguon Python sang C++ (Co the mat nhieu phut)...
-nuitka --standalone --onefile --enable-plugin=pyqt6 --include-package=yt_dlp --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --remove-output --lto=yes --windows-disable-console main.py
+nuitka --standalone --onefile --enable-plugin=pyqt6 --include-package=yt_dlp --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --remove-output --lto=no --windows-disable-console main.py
 if errorlevel 1 (
     echo.
     echo [LOI] Bien dich that bai! Vui long kiem tra log C++ compiler.

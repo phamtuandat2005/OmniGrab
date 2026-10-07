@@ -64,17 +64,17 @@ goto MENU
 
 :BUILD_STANDARD
 echo.
-echo Dang dong goi tieu chuan voi PyInstaller...
+echo Dang dong goi tieu chuan voi PyInstaller (--onefile)...
 pip install pyinstaller --quiet --upgrade
-pyinstaller --noconfirm --clean --noconsole --onedir --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai!
     pause
     exit /b 1
 )
 echo.
-echo DONG GOI THANH CONG! Thu muc dau ra: dist\OmniGrab
-echo QUAN TRONG: Dat ffmpeg.exe vao thu muc dist\OmniGrab de ho tro ghep video.
+echo DONG GOI THANH CONG! File thuc thi: dist\OmniGrab.exe
+echo (Da tich hop san ffmpeg vao ben trong file exe)
 pause
 exit /b 0
 
@@ -89,7 +89,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [2/3] Bat dau bien dich ma nguon Python sang C++ (Co the mat nhieu phut)...
-nuitka --standalone --onefile --enable-plugin=pyqt6 --include-package=yt_dlp --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --remove-output --lto=no --windows-disable-console main.py
+nuitka --standalone --onefile --enable-plugin=pyqt6 --include-package=yt_dlp --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --include-data-files=ffmpeg.exe=ffmpeg.exe --include-data-files=ffprobe.exe=ffprobe.exe --remove-output --lto=no --windows-disable-console main.py
 if errorlevel 1 (
     echo.
     echo [LOI] Bien dich that bai! Vui long kiem tra log C++ compiler.
@@ -120,13 +120,13 @@ xcopy /s /i /y assets dist_obfuscated\assets >nul
 
 echo [3/3] Dang dong goi code da ma hoa bang PyInstaller...
 cd dist_obfuscated
-pyinstaller --noconfirm --clean --noconsole --onedir --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" --add-binary "..\ffmpeg.exe;." --add-binary "..\ffprobe.exe;." --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai.
     pause
     exit /b 1
 )
 cd ..
-echo DONG GOI THANH CONG! Thu muc dau ra: dist_obfuscated\dist\OmniGrab_Protected\
+echo DONG GOI THANH CONG! File dau ra: dist_obfuscated\dist\OmniGrab_Protected.exe
 pause
 exit /b 0

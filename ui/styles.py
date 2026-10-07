@@ -78,6 +78,7 @@ PLATFORM_COLORS = {
     "HỆ THỐNG": COLORS["platform_system"],
     "TIẾN ĐỘ": COLORS["platform_progress"],
     "LỖI": COLORS["accent_red"],
+    "LỒNG TIẾNG": "#a78bfa",
 }
 
 
@@ -341,5 +342,93 @@ def get_app_stylesheet() -> str:
 
     QSplitter::handle:horizontal {{
         width: 1px;
+    }}
+
+    /* ===== TAB WIDGET ===== */
+    QTabWidget::pane {{
+        border: 1px solid {c["border"]};
+        border-radius: 8px;
+        background-color: {c["bg_primary"]};
+        top: -1px;
+    }}
+
+    QTabBar::tab {{
+        background-color: {c["bg_secondary"]};
+        color: {c["text_muted"]};
+        border: 1px solid {c["border"]};
+        border-bottom: none;
+        border-radius: 0;
+        border-top-left-radius: 7px;
+        border-top-right-radius: 7px;
+        padding: 9px 22px;
+        font-size: 13px;
+        font-weight: 600;
+        margin-right: 3px;
+        min-width: 200px;
+    }}
+
+    QTabBar::tab:selected {{
+        background-color: {c["bg_card"]};
+        color: {c["text_primary"]};
+        border-color: {c["border"]};
+        border-bottom: 2px solid {c["accent_blue"]};
+    }}
+
+    QTabBar::tab:hover:!selected {{
+        background-color: {c["btn_secondary_hover"]};
+        color: {c["text_secondary"]};
+    }}
+
+    /* ===== TABLE WIDGET ===== */
+    QTableWidget {{
+        background-color: {c["bg_input"]};
+        color: {c["text_primary"]};
+        border: 1px solid {c["bg_input_border"]};
+        border-radius: 6px;
+        gridline-color: {c["border"]};
+        font-size: 12px;
+        outline: none;
+        selection-background-color: {c["badge_active_bg"]};
+        selection-color: {c["text_primary"]};
+    }}
+
+    QTableWidget::item {{
+        padding: 6px 10px;
+        border: none;
+    }}
+
+    QTableWidget::item:selected {{
+        background-color: {c["badge_active_bg"]};
+        color: {c["text_primary"]};
+    }}
+
+    QTableWidget::item:hover {{
+        background-color: {c["btn_secondary_hover"]};
+    }}
+
+    QHeaderView::section {{
+        background-color: {c["bg_secondary"]};
+        color: {c["text_secondary"]};
+        border: none;
+        border-right: 1px solid {c["border"]};
+        border-bottom: 1px solid {c["border"]};
+        padding: 7px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+    }}
+
+    QHeaderView::section:first {{
+        border-top-left-radius: 6px;
+    }}
+
+    QHeaderView::section:last {{
+        border-right: none;
+    }}
+
+    QTableCornerButton::section {{
+        background-color: {c["bg_secondary"]};
+        border: none;
+        border-bottom: 1px solid {c["border"]};
     }}
     """

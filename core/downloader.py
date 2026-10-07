@@ -5,12 +5,15 @@ Hỗ trợ:
 - TikTok / Douyin: Tải MP4 độ phân giải cao nhất, không watermark.
 - Facebook: Tải chất lượng cao nhất, tự động ghép bằng ffmpeg.
 - Tùy chọn cookie, thư mục lưu, resume khi gián đoạn.
+- Hỗ trợ xuất chỉ âm thanh (.mp3) và mẫu đặt tên file linh hoạt.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
@@ -23,6 +26,7 @@ class DownloadConfig:
     cookie_file: str = ""
     ffmpeg_path: str = ""
     file_template: str = "%(extractor)s_%(title).40s_%(id)s.%(ext)s"
+    audio_only: bool = False  # Nếu True, xuất chỉ âm thanh (.mp3)
 
     # Callbacks để gửi tín hiệu tiến trình về UI
     progress_hook: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -121,9 +125,18 @@ def build_ydl_opts(config: DownloadConfig, url: str) -> Dict[str, Any]:
     elif is_facebook:
         opts.update(_get_facebook_opts())
     else:
-        # Cấu hình mặc định cho các nền tảng khác
-        opts["format"] = "bestvideo+bestaudio/best"
+        # Cấu hình mặc định cho các nền tảng khác: ưu tiên H.264 (avc1) + AAC
+        opts["format"] = (
+            "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec*=avc]+bestaudio/"
+            "bestvideo[vcodec*=h264]+bestaudio/"
+            "best[vcodec*=avc]/"
+            "best[ext=mp4]/best"
+        )
         opts["merge_output_format"] = "mp4"
+        opts["postprocessor_args"] = {
+            "ffmpeg": ["-c:v", "copy", "-c:a", "aac"]
+        }
 
     # Gắn hooks tiến trình
     if config.progress_hook:
@@ -132,6 +145,22 @@ def build_ydl_opts(config: DownloadConfig, url: str) -> Dict[str, Any]:
     if config.postprocessor_hook:
         opts["postprocessor_hooks"] = [config.postprocessor_hook]
 
+    # Chế độ chỉ âm thanh (.mp3)
+    if config.audio_only:
+        opts["format"] = "bestaudio/best"
+        # Xóa cấu hình video nếu đã set
+        opts.pop("merge_output_format", None)
+        opts.pop("postprocessor_args", None)
+        opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ]
+        # Cập nhật template để đổi đuôi sang .mp3
+        opts["outtmpl"] = os.path.join(config.output_dir, config.file_template)
+
     return opts
 
 
@@ -139,15 +168,33 @@ def _get_tiktok_douyin_opts() -> Dict[str, Any]:
     """
     Tùy chọn tối ưu cho TikTok / Douyin.
 
-    Ưu tiên:
-    - Luồng MP4 trực tiếp, không watermark.
-    - Độ phân giải cao nhất khả dụng.
+    Ép buộc ưu tiên video chuẩn H.264 (avc1/h264) thay vì H.265 (hevc)
+    và âm thanh AAC trong container MP4 để tương thích Windows Media Player mặc định.
     """
     return {
-        # Tối ưu: Lấy bản H.264 (avc) để xem trên Windows, ưu tiên bản đã gộp sẵn (best) hoặc tự gộp
-        "format": "best[vcodec*=avc]/bestvideo[vcodec*=avc]+bestaudio/best[ext=mp4]/best",
+        # 1. Ép buộc ưu tiên video chuẩn H.264 (avc1/h264) thay vì H.265 (hevc)
+        "format": (
+            "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec*=avc]+bestaudio/"
+            "bestvideo[vcodec*=h264]+bestaudio/"
+            "best[vcodec*=avc]/"
+            "best[ext=mp4]/best"
+        ),
         "merge_output_format": "mp4",
-        # Thêm referer để vượt qua kiểm tra nguồn
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        # Đảm bảo container xuất ra là MP4 chuẩn
+        "postprocessors": [
+            {
+                "key": "FFmpegVideoRemuxer",
+                "preferedformat": "mp4",
+            }
+        ],
+        # 2. Đảm bảo codec video là copy (h264) và codec audio là AAC
+        "postprocessor_args": {
+            "ffmpeg": ["-c:v", "copy", "-c:a", "aac"]
+        },
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -163,20 +210,97 @@ def _get_facebook_opts() -> Dict[str, Any]:
     """
     Tùy chọn tối ưu cho Facebook.
 
-    Ưu tiên:
-    - Chất lượng cao nhất (video + audio riêng, ghép bằng ffmpeg).
-    - Hỗ trợ video từ nhóm riêng tư (cần cookie).
+    Ưu tiên H.264 + AAC để tương thích mọi máy Windows.
     """
     return {
-        "format": "bestvideo+bestaudio/best",
+        "format": (
+            "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec*=avc]+bestaudio/"
+            "bestvideo[vcodec*=h264]+bestaudio/"
+            "best[vcodec*=avc]/"
+            "bestvideo+bestaudio/best"
+        ),
         "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
         "postprocessors": [
             {
                 "key": "FFmpegVideoConvertor",
                 "preferedformat": "mp4",
             }
         ],
+        "postprocessor_args": {
+            "ffmpeg": ["-c:v", "copy", "-c:a", "aac"]
+        },
     }
+
+
+def ensure_h264_compatibility(video_path: str, ffmpeg_dir: str = "") -> None:
+    """
+    Kiểm tra nếu video là HEVC (H.265) thì tự động chuyển về H.264 tương thích mọi máy Windows.
+    Đảm bảo video xem được trên Windows Media Player mặc định không bị lỗi codec.
+    """
+    if not video_path or not os.path.isfile(video_path):
+        return
+
+    # Bỏ qua nếu là file âm thanh
+    if video_path.lower().endswith((".mp3", ".m4a", ".wav", ".aac")):
+        return
+
+    temp_path = ""
+    try:
+        # Tự động tìm đường dẫn ffprobe / ffmpeg
+        if not ffmpeg_dir:
+            ffmpeg_dir = _detect_ffmpeg()
+
+        ffprobe_bin = (
+            os.path.join(ffmpeg_dir, "ffprobe.exe")
+            if ffmpeg_dir and os.path.isfile(os.path.join(ffmpeg_dir, "ffprobe.exe"))
+            else "ffprobe"
+        )
+        ffmpeg_bin = (
+            os.path.join(ffmpeg_dir, "ffmpeg.exe")
+            if ffmpeg_dir and os.path.isfile(os.path.join(ffmpeg_dir, "ffmpeg.exe"))
+            else "ffmpeg"
+        )
+
+        # Lấy thông tin codec video bằng ffprobe
+        cmd_probe = f'"{ffprobe_bin}" -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "{video_path}"'
+        codec = subprocess.check_output(
+            cmd_probe,
+            shell=True,
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        ).strip().lower()
+
+        if codec in ["hevc", "h265"]:
+            base, ext = os.path.splitext(video_path)
+            temp_path = f"{base}_h264{ext}"
+            cmd_convert = (
+                f'"{ffmpeg_bin}" -y -i "{video_path}" '
+                f'-c:v libx264 -preset fast -crf 22 -c:a copy "{temp_path}"'
+            )
+            subprocess.run(
+                cmd_convert,
+                shell=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=600,
+            )
+
+            # Ghi đè file cũ
+            if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+                os.replace(temp_path, video_path)
+    except Exception:
+        # Nếu có lỗi thì dọn dẹp file tạm (nếu có) và giữ nguyên file gốc
+        if temp_path and os.path.isfile(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
 
 
 def download_single_video(config: DownloadConfig, url: str) -> dict[str, Any]:
@@ -192,16 +316,31 @@ def download_single_video(config: DownloadConfig, url: str) -> dict[str, Any]:
           - "success" (bool): Tải thành công hay không.
           - "url" (str): URL đã tải.
           - "title" (str): Tiêu đề video (nếu có).
+          - "file_path" (str): Đường dẫn file đã tải (nếu thành công).
           - "error" (str): Thông báo lỗi (nếu thất bại).
     """
     import yt_dlp
 
     opts = build_ydl_opts(config, url)
 
+    # Thu thập đường dẫn file đã hoàn tất từ hook
+    downloaded_files: list[str] = []
+
+    def _track_finished_file(d: dict[str, Any]) -> None:
+        if d.get("status") == "finished":
+            fn = d.get("filename")
+            if fn and fn not in downloaded_files:
+                downloaded_files.append(fn)
+
+    # Gắn hook theo dõi file
+    prog_hooks = opts.get("progress_hooks", [])
+    opts["progress_hooks"] = prog_hooks + [_track_finished_file]
+
     result: dict[str, Any] = {
         "success": False,
         "url": url,
         "title": "",
+        "file_path": "",
         "error": "",
     }
 
@@ -211,6 +350,53 @@ def download_single_video(config: DownloadConfig, url: str) -> dict[str, Any]:
             if info:
                 result["success"] = True
                 result["title"] = info.get("title", "Không rõ tiêu đề")
+
+                # Tìm đường dẫn file video đầu ra
+                output_file = ""
+
+                # 1. Kiểm tra requested_downloads (yt-dlp chuẩn)
+                req_downloads = info.get("requested_downloads") or []
+                for rd in req_downloads:
+                    fp = rd.get("filepath") or rd.get("_filename")
+                    if fp and os.path.isfile(fp):
+                        output_file = fp
+                        break
+
+                # 2. Kiểm tra filepath / _filename trực tiếp từ info
+                if not output_file:
+                    fp = info.get("filepath") or info.get("_filename")
+                    if fp and os.path.isfile(fp):
+                        output_file = fp
+
+                # 3. Kiểm tra prepare_filename từ ydl
+                if not output_file:
+                    try:
+                        cand = ydl.prepare_filename(info)
+                        if os.path.isfile(cand):
+                            output_file = cand
+                        else:
+                            cand_mp4 = os.path.splitext(cand)[0] + ".mp4"
+                            if os.path.isfile(cand_mp4):
+                                output_file = cand_mp4
+                    except Exception:
+                        pass
+
+                # 4. Kiểm tra các file đã ghi nhận qua hooks
+                if not output_file and downloaded_files:
+                    for fp in reversed(downloaded_files):
+                        if os.path.isfile(fp):
+                            output_file = fp
+                            break
+                        fp_mp4 = os.path.splitext(fp)[0] + ".mp4"
+                        if os.path.isfile(fp_mp4):
+                            output_file = fp_mp4
+                            break
+
+                # Tự động kiểm tra và chuyển đổi H.264 nếu video dính HEVC
+                if output_file and not config.audio_only:
+                    ensure_h264_compatibility(output_file, config.ffmpeg_path)
+
+                result["file_path"] = output_file
             else:
                 result["error"] = "Không thể trích xuất thông tin video."
     except yt_dlp.utils.DownloadError as e:

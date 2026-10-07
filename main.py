@@ -9,6 +9,19 @@ from __future__ import annotations
 import os
 import sys
 
+# Vá tương thích PyAV 19+ cho faster-whisper
+try:
+    import av
+    _orig_av_open = av.open
+
+    def _safe_av_open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return _orig_av_open(*args, **kwargs)
+
+    av.open = _safe_av_open
+except Exception:
+    pass
+
 # pyrefly: ignore [missing-import]
 from PyQt6.QtWidgets import QApplication
 # pyrefly: ignore [missing-import]

@@ -414,3 +414,86 @@ def download_single_video(config: DownloadConfig, url: str) -> dict[str, Any]:
         result["error"] = f"Lỗi không xác định: {str(e)}"
 
     return result
+
+
+def scan_channel_videos(
+    channel_url: str,
+    max_videos: int = 50,
+    cookie_file: str = "",
+    progress_callback: Optional[Callable[[str], None]] = None,
+) -> list[dict[str, Any]]:
+    """
+    Quét danh sách video từ Kênh / Hồ sơ người dùng.
+
+    Tự động định tuyến giải pháp:
+    - Douyin   : Sử dụng f2 (vượt chữ ký a_bogus).
+    - Facebook : Sử dụng mbasic.facebook.com endpoint.
+    - Nền tảng khác: Dùng yt-dlp với extract_flat='in_playlist'.
+
+    Args:
+        channel_url: URL trang cá nhân hoặc kênh.
+        max_videos: Số video tối đa cần quét.
+        cookie_file: Đường dẫn file cookie Netscape (.txt).
+        progress_callback: Callback nhận thông báo tiến trình.
+
+    Returns:
+        Danh sách video dict chuẩn hóa.
+    """
+    from core.channel_scrapers import (
+        is_douyin_channel,
+        is_facebook_channel,
+        scan_douyin_channel,
+        scan_facebook_channel,
+    )
+
+    if is_douyin_channel(channel_url):
+        return scan_douyin_channel(
+            channel_url=channel_url,
+            max_videos=max_videos,
+            cookie_file=cookie_file,
+            progress_cb=progress_callback,
+        )
+
+    if is_facebook_channel(channel_url):
+        return scan_facebook_channel(
+            channel_url=channel_url,
+            max_videos=max_videos,
+            cookie_file=cookie_file,
+            progress_cb=progress_callback,
+        )
+
+    # Mặc định dùng yt-dlp
+    import yt_dlp
+    opts: dict[str, Any] = {
+        "extract_flat": "in_playlist",
+        "playlistend": max_videos,
+        "quiet": True,
+        "no_warnings": True,
+        "no_color": True,
+        "ignoreerrors": True,
+        "socket_timeout": 30,
+    }
+    if cookie_file and os.path.isfile(cookie_file):
+        opts["cookiefile"] = cookie_file
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(channel_url, download=False)
+        if not info:
+            return []
+        entries = info.get("entries") or []
+        res = []
+        for e in entries:
+            if not e:
+                continue
+            res.append({
+                "id": e.get("id", ""),
+                "title": e.get("title") or e.get("fulltitle") or "",
+                "url": e.get("url") or e.get("webpage_url", ""),
+                "duration": e.get("duration", 0),
+                "view_count": e.get("view_count", 0),
+                "like_count": e.get("like_count", 0),
+                "upload_date": e.get("upload_date", ""),
+            })
+            if len(res) >= max_videos:
+                break
+        return res

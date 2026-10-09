@@ -55,13 +55,32 @@ class DubSegment:
 @dataclass
 class DubConfig:
     """Cấu hình cho một phiên lồng tiếng."""
-    source_lang: str = "zh"                         # Ngôn ngữ gốc: 'zh' hoặc 'en'
+    source_lang: str = "zh-CN"                       # Ngôn ngữ gốc: 'zh-CN', 'en', 'ja', 'ko'
     voice: str = "vi-VN-HoaiMyNeural"               # Giọng đọc Edge-TTS
     bg_volume: float = 0.12                          # Âm lượng nhạc nền gốc (0.0 - 1.0)
     whisper_model: str = "base"                      # Model Whisper: 'tiny', 'base', 'small'
     ffmpeg_path: str = ""                            # Đường dẫn thư mục ffmpeg
     log_callback: Optional[Callable[[str], None]] = field(default=None, repr=False)
     progress_callback: Optional[Callable[[int, int], None]] = field(default=None, repr=False)
+def _normalize_whisper_lang(lang_code: Optional[str]) -> Optional[str]:
+    """
+    Chuẩn hóa mã ngôn ngữ cho faster-whisper.
+    faster-whisper chỉ nhận mã 2 chữ cái ('zh', 'en', 'ja', 'ko'...) hoặc 'yue', 'haw'.
+    Nếu gặp 'zh-CN', 'zh-TW', 'en-US' -> chuyển về 'zh', 'en'.
+    """
+    if not lang_code:
+        return None
+    cleaned = lang_code.strip()
+    if cleaned.lower() in ("yue", "haw"):
+        return cleaned.lower()
+    code = cleaned.replace("_", "-").split("-")[0].lower()
+    try:
+        from faster_whisper.tokenizer import _LANGUAGE_CODES
+        if code in _LANGUAGE_CODES:
+            return code
+    except Exception:
+        pass
+    return code if len(code) == 2 else "zh"
 
 
 class VideoDubber:
@@ -167,18 +186,53 @@ class VideoDubber:
                 "Hãy chạy: pip install faster-whisper"
             )
 
+        # Kiểm tra onnxruntime (cần thiết cho VAD filter)
+        _has_onnx = False
+        try:
+            import onnxruntime  # noqa: F401
+            _has_onnx = True
+        except ImportError:
+            self._log(
+                "⚠️ [LỒNG TIẾNG] Thư viện 'onnxruntime' chưa cài → "
+                "Tắt bộ lọc VAD. "
+                "Chạy 'pip install onnxruntime' để bật VAD lọc tiếng ồn tốt hơn."
+            )
+
         model = WhisperModel(
             self._cfg.whisper_model,
             device="cpu",
             compute_type="int8",
         )
+        # Whisper dùng mã nguyên bản (zh không phải zh-CN)
+        whisper_lang = _normalize_whisper_lang(self._cfg.source_lang)
 
-        segments_raw, _ = model.transcribe(
-            wav_path,
-            language=self._cfg.source_lang,
-            vad_filter=True,              # Bộ lọc VAD khử tiếng ồn
-            condition_on_previous_text=False,
-        )
+        try:
+            segments_raw, _ = model.transcribe(
+                wav_path,
+                language=whisper_lang,
+                vad_filter=_has_onnx,          # Bộ lọc VAD khử tiếng ồn (cần onnxruntime)
+                condition_on_previous_text=False,
+            )
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "onnxruntime" in err_msg or "vad" in err_msg:
+                self._log("⚠️ [LỒNG TIẾNG] VAD filter lỗi, thử lại không dùng VAD...")
+                segments_raw, _ = model.transcribe(
+                    wav_path,
+                    language=whisper_lang,
+                    vad_filter=False,
+                    condition_on_previous_text=False,
+                )
+            elif "not a valid language code" in err_msg or "language" in err_msg:
+                self._log(f"⚠️ [LỒNG TIẾNG] Mã ngôn ngữ '{whisper_lang}' không hợp lệ cho Whisper, tự nhận diện...")
+                segments_raw, _ = model.transcribe(
+                    wav_path,
+                    language=None,
+                    vad_filter=False,
+                    condition_on_previous_text=False,
+                )
+            else:
+                raise
 
         result: List[DubSegment] = []
         for seg in segments_raw:
@@ -191,32 +245,58 @@ class VideoDubber:
                 ))
         return result
 
+
     # ─────────────────────────────────────────────────────────────────
     # BƯỚC 3: Dịch sang Tiếng Việt
     # ─────────────────────────────────────────────────────────────────
 
     def _translate_segments(self, segments: List[DubSegment]) -> None:
-        """Dịch từng đoạn thoại sang Tiếng Việt bằng GoogleTranslator."""
-        try:
-            from deep_translator import GoogleTranslator  # type: ignore
-        except ImportError:
-            raise RuntimeError(
-                "Thư viện 'deep-translator' chưa được cài đặt.\n"
-                "Hãy chạy: pip install deep-translator"
-            )
+        """Dịch từng đoạn thoại sang Tiếng Việt (Google Translate API + fallback deep-translator)."""
+        raw_src = (self._cfg.source_lang or "zh-CN").strip()
+        if raw_src.lower() in ("zh", "zh-cn", "zh_cn", "cn"):
+            trans_src = "zh-CN"
+        elif raw_src.lower() in ("zh-tw", "zh_tw", "tw"):
+            trans_src = "zh-TW"
+        else:
+            trans_src = raw_src.replace("_", "-").split("-")[0].lower()
 
-        translator = GoogleTranslator(
-            source=self._cfg.source_lang,
-            target="vi",
-        )
+        import requests
 
         for i, seg in enumerate(segments):
+            text = seg.original_text.strip()
+            if not text:
+                seg.vn_text = ""
+                continue
+
+            translated = ""
+
+            # Cách 1: Google Translate API endpoint trực tiếp (nhanh nhất, không bị lỗi 429)
             try:
-                translated = translator.translate(seg.original_text)
-                seg.vn_text = translated or seg.original_text
-            except Exception as e:
-                self._log(f"  ⚠ Lỗi dịch câu {i + 1}: {e} — giữ nguyên bản gốc.")
-                seg.vn_text = seg.original_text
+                url = "https://translate.googleapis.com/translate_a/single"
+                params = {
+                    "client": "gtx",
+                    "sl": trans_src,
+                    "tl": "vi",
+                    "dt": "t",
+                    "q": text,
+                }
+                resp = requests.get(url, params=params, timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    translated = "".join(part[0] for part in data[0] if part and part[0]).strip()
+            except Exception:
+                translated = ""
+
+            # Cách 2: Fallback qua deep-translator nếu cách 1 lỗi mạng
+            if not translated:
+                try:
+                    from deep_translator import GoogleTranslator
+                    translated = GoogleTranslator(source=trans_src, target="vi").translate(text)
+                except Exception as e:
+                    self._log(f"  ⚠ Lỗi dịch câu {i + 1}: {e} — giữ nguyên bản gốc.")
+                    translated = text
+
+            seg.vn_text = translated or text
 
     # ─────────────────────────────────────────────────────────────────
     # BƯỚC 4: Dynamic Pacing + TTS Edge-TTS

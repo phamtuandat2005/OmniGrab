@@ -375,15 +375,126 @@ class ScanChannelWorker(QThread):
 
         return True
 
+    def _process_and_emit(self, collected: list) -> None:
+        """Lọc và phát tín hiệu cho các video tìm được."""
+        total = len(collected)
+        if total == 0:
+            self.scan_error.emit("Không tìm thấy video nào trong kênh này.")
+            return
+
+        has_filter = (
+            self._min_views > 0 or self._min_likes > 0
+            or self._duration_filter != self.DURATION_ALL
+            or self._date_filter != self.DATE_ALL
+        )
+        self.scan_progress.emit(
+            f"Đang xử lý {total} video" +
+            (" và áp dụng bộ lọc..." if has_filter else "...")
+        )
+
+        passed = 0
+        videos: list[dict] = []
+        for idx, entry in enumerate(collected):
+            # Áp dụng bộ lọc
+            if has_filter and not self._passes_filters(entry):
+                self.scan_progress.emit(
+                    f"Kiểm tra {idx + 1}/{total} (đã lọc: {passed})..."
+                )
+                continue
+
+            passed += 1
+
+            # Xây dựng URL & metadata
+            video_url = entry.get("url") or entry.get("webpage_url", "")
+            video_id = entry.get("id", "")
+            title = entry.get("title") or entry.get("fulltitle") or f"Video #{idx + 1}"
+
+            duration_val = entry.get("duration")
+            duration_sec = entry.get("duration_sec")
+            if duration_sec is None and isinstance(duration_val, (int, float)):
+                duration_sec = int(duration_val)
+
+            views = entry.get("views_raw") if entry.get("views_raw") is not None else (entry.get("view_count") or entry.get("views") or 0)
+            likes = entry.get("likes_raw") if entry.get("likes_raw") is not None else (entry.get("like_count") or entry.get("likes") or 0)
+            upload_date_raw = str(entry.get("upload_date_raw") or entry.get("upload_date") or "")
+
+            # Format chuỗi hiển thị nếu chưa được format
+            duration_str = entry.get("duration") if isinstance(entry.get("duration"), str) and ":" in str(entry.get("duration")) else self._fmt_duration(duration_sec)
+            views_str = entry.get("views") if isinstance(entry.get("views"), str) and any(c in str(entry.get("views")) for c in ["K", "M", "--"]) else self._fmt_number(views)
+            likes_str = entry.get("likes") if isinstance(entry.get("likes"), str) and any(c in str(entry.get("likes")) for c in ["K", "M", "--"]) else self._fmt_number(likes)
+            date_str = entry.get("upload_date") if isinstance(entry.get("upload_date"), str) and "/" in str(entry.get("upload_date")) else self._fmt_upload_date(upload_date_raw)
+
+            video_data = {
+                "title": title,
+                "duration": duration_str,
+                "duration_sec": int(duration_sec) if duration_sec else 0,
+                "views": views_str,
+                "views_raw": int(views) if str(views).isdigit() else 0,
+                "likes": likes_str,
+                "likes_raw": int(likes) if str(likes).isdigit() else 0,
+                "upload_date": date_str,
+                "upload_date_raw": upload_date_raw,
+                "url": video_url,
+                "id": video_id,
+            }
+            videos.append(video_data)
+            self.video_found.emit(video_data)
+            self.scan_progress.emit(
+                f"Kiểm tra {idx + 1}/{total} — Đạt bộ lọc: {passed} video"
+            )
+
+        self.scan_finished.emit(videos)
+        filter_note = f" (sau khi lọc từ {total})" if has_filter and passed < total else ""
+        self.scan_progress.emit(
+            f"✅ Quét hoàn tất! Tìm thấy {len(videos)} video{filter_note}."
+        )
+
     def run(self) -> None:
         """Điểm vào chính — thực hiện quét playlist/channel với bộ lọc."""
         import yt_dlp
         from core.security import get_base_path
+        from core.channel_scrapers import (
+            is_douyin_channel,
+            is_facebook_channel,
+            scan_douyin_channel,
+            scan_facebook_channel,
+        )
         import os
         import shutil
 
         self.scan_progress.emit(f"Đang quét kênh: {self._channel_url}")
 
+        # ── 1. Giải pháp chuyên biệt cho Kênh Douyin (dùng f2) ──
+        if is_douyin_channel(self._channel_url):
+            self.scan_progress.emit("Đang dùng bộ quét Douyin chuyên biệt (f2 - vượt mã hóa chữ ký)...")
+            try:
+                raw_videos = scan_douyin_channel(
+                    channel_url=self._channel_url,
+                    max_videos=self._max_videos,
+                    cookie_file=self._cookie_file,
+                    progress_cb=self.scan_progress.emit,
+                )
+                self._process_and_emit(raw_videos)
+            except Exception as e:
+                self.scan_error.emit(str(e))
+            return
+
+        # ── 2. Giải pháp chuyên biệt cho Facebook (mbasic endpoint) ──
+        if is_facebook_channel(self._channel_url):
+            self.scan_progress.emit("Đang dùng bộ quét Facebook chuyên biệt (mbasic endpoint)...")
+            try:
+                raw_videos = scan_facebook_channel(
+                    channel_url=self._channel_url,
+                    max_videos=self._max_videos,
+                    cookie_file=self._cookie_file,
+                    progress_cb=self.scan_progress.emit,
+                )
+                self._process_and_emit(raw_videos)
+            except Exception as e:
+                self.scan_error.emit(str(e))
+            return
+
+        # ── 3. Quét thông thường bằng yt-dlp (YouTube, TikTok...) ──
         # Tìm ffmpeg
         app_dir = get_base_path()
         ffmpeg_dir = ""
@@ -419,17 +530,22 @@ class ScanChannelWorker(QThread):
         if self._cookie_file and os.path.isfile(self._cookie_file):
             ydl_opts["cookiefile"] = self._cookie_file
 
-        videos: list[dict] = []
-
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self.scan_progress.emit("Đang trích xuất thông tin playlist / kênh...")
                 info = ydl.extract_info(self._channel_url, download=False)
 
                 if info is None:
-                    self.scan_error.emit(
-                        "Không thể truy cập kênh. Hãy kiểm tra lại URL hoặc cung cấp Cookie."
-                    )
+                    url_lower = self._channel_url.lower()
+                    if ("tiktok.com" in url_lower or "douyin.com" in url_lower or "facebook.com" in url_lower or "fb.com" in url_lower) and not self._cookie_file:
+                        self.scan_error.emit(
+                            "Kênh bị chặn do chưa có Cookie xác thực. "
+                            "TikTok yêu cầu phiên đăng nhập để duyệt danh sách video."
+                        )
+                    else:
+                        self.scan_error.emit(
+                            "Không thể truy cập kênh. Hãy kiểm tra lại URL hoặc cung cấp Cookie hợp lệ."
+                        )
                     return
 
                 entries = info.get("entries") or []
@@ -441,76 +557,21 @@ class ScanChannelWorker(QThread):
                     if i + 1 >= self._max_videos:
                         break
 
-                total = len(collected)
-                if total == 0:
-                    self.scan_error.emit(
-                        "Không tìm thấy video nào trong kênh này. "
-                        "Có thể URL không đúng hoặc kênh yêu cầu đăng nhập."
-                    )
-                    return
-
-                has_filter = (
-                    self._min_views > 0 or self._min_likes > 0
-                    or self._duration_filter != self.DURATION_ALL
-                    or self._date_filter != self.DATE_ALL
-                )
-                self.scan_progress.emit(
-                    f"Đang xử lý {total} video" +
-                    (" và áp dụng bộ lọc..." if has_filter else "...")
-                )
-
-                passed = 0
-                for idx, entry in enumerate(collected):
-                    # Áp dụng bộ lọc
-                    if has_filter and not self._passes_filters(entry):
-                        self.scan_progress.emit(
-                            f"Kiểm tra {idx + 1}/{total} (đã lọc: {passed})..."
-                        )
-                        continue
-
-                    passed += 1
-
-                    # Xây dựng URL
-                    video_url = entry.get("url") or entry.get("webpage_url", "")
-                    video_id = entry.get("id", "")
-                    title = entry.get("title") or entry.get("fulltitle") or f"Video #{idx + 1}"
-
-                    # Metadata đầy đủ
-                    duration_sec = entry.get("duration")
-                    views = entry.get("view_count") or entry.get("views") or 0
-                    likes = entry.get("like_count") or entry.get("likes") or 0
-                    upload_date_raw = entry.get("upload_date", "")
-
-                    video_data = {
-                        "title": title,
-                        "duration": self._fmt_duration(duration_sec),
-                        "duration_sec": int(duration_sec) if duration_sec else 0,
-                        "views": self._fmt_number(views),
-                        "views_raw": int(views) if views else 0,
-                        "likes": self._fmt_number(likes),
-                        "likes_raw": int(likes) if likes else 0,
-                        "upload_date": self._fmt_upload_date(upload_date_raw),
-                        "upload_date_raw": upload_date_raw,
-                        "url": video_url,
-                        "id": video_id,
-                    }
-                    videos.append(video_data)
-                    self.video_found.emit(video_data)
-                    self.scan_progress.emit(
-                        f"Kiểm tra {idx + 1}/{total} — Đạt bộ lọc: {passed} video"
-                    )
-
-                self.scan_finished.emit(videos)
-                filter_note = f" (sau khi lọc từ {total})" if has_filter and passed < total else ""
-                self.scan_progress.emit(
-                    f"✅ Quét hoàn tất! Tìm thấy {len(videos)} video{filter_note}."
-                )
+                self._process_and_emit(collected)
 
         except yt_dlp.utils.DownloadError as e:
             error_msg = str(e)
-            if "Private" in error_msg or "login" in error_msg.lower() or "Sign in" in error_msg:
+            err_lower = error_msg.lower()
+            if (
+                "private" in err_lower
+                or "login" in err_lower
+                or "sign in" in err_lower
+                or "secondary user id" in err_lower
+                or "blocked" in err_lower
+                or "10204" in err_lower
+            ):
                 self.scan_error.emit(
-                    "Kênh / Hồ sơ này yêu cầu đăng nhập. Hãy cung cấp file Cookie hợp lệ."
+                    "Kênh yêu cầu xác thực Cookie. Nền tảng chặn quét tự động nếu không có phiên đăng nhập."
                 )
             else:
                 self.scan_error.emit(f"Lỗi khi quét kênh: {error_msg[:200]}")

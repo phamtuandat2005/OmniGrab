@@ -64,6 +64,7 @@ from core.dubber import DubConfig, check_dub_dependencies
 from core.dub_worker import DubWorker
 from core.parser import extract_urls, read_urls_from_file
 from core.worker import DownloadWorker, ScanChannelWorker
+from ui.cookie_dialog import CookieFailedDialog, CookieGuideDialog, CookiePromptDialog
 from ui.styles import COLORS, PLATFORM_COLORS
 
 
@@ -197,12 +198,14 @@ class DubbingDialog(QDialog):
         # Ngôn ngữ gốc
         grid.addWidget(self._lbl("Ngôn ngữ video gốc:"), 0, 0)
         self._combo_lang = QComboBox()
-        self._combo_lang.addItem("🇨🇳  Tiếng Trung (Douyin)", "zh")
+        self._combo_lang.addItem("🇨🇳  Tiếng Trung (Douyin)", "zh-CN")
         self._combo_lang.addItem("🇬🇧  Tiếng Anh (TikTok / Facebook)", "en")
         self._combo_lang.addItem("🇯🇵  Tiếng Nhật", "ja")
         self._combo_lang.addItem("🇰🇷  Tiếng Hàn", "ko")
         # Chọn ngôn ngữ hiện tại
         idx = self._combo_lang.findData(src_lang)
+        if idx < 0 and src_lang in ("zh", "zh-TW", "zh-CN"):
+            idx = self._combo_lang.findData("zh-CN")
         if idx >= 0:
             self._combo_lang.setCurrentIndex(idx)
         grid.addWidget(self._combo_lang, 0, 1)
@@ -324,7 +327,7 @@ class DubbingDialog(QDialog):
 
     def _save_and_accept(self) -> None:
         self.result_auto_dub = self._chk_auto.isChecked()
-        self.result_src_lang = self._combo_lang.currentData() or "zh"
+        self.result_src_lang = self._combo_lang.currentData() or "zh-CN"
         self.result_voice = self._combo_voice.currentData() or "vi-VN-HoaiMyNeural"
         self.result_bg_volume = self._slider_vol.value()
         self.result_whisper_model = self._combo_model.currentData() or "base"
@@ -365,7 +368,7 @@ class MainWindow(QMainWindow):
         self.output_dir: str = str(Path.home() / "Videos" / "OmniGrab_Downloads")
         self.cookies_path: str = ""
         self.auto_dub: bool = False
-        self.dub_lang: str = "zh"
+        self.dub_lang: str = "zh-CN"
         self.dub_voice: str = "vi-VN-HoaiMyNeural"
         self.bg_volume: int = 12              # % (0-30)
         self.whisper_model: str = "base"
@@ -383,6 +386,7 @@ class MainWindow(QMainWindow):
         self._build_statusbar()
         self._connect_signals()
         self._refresh_statusbar()
+        self._update_cookie_ui()
         self._append_log(
             "HỆ THỐNG",
             "OmniGrab v4.0 sẵn sàng. Dán link vào ô nhập hoặc vào Chế độ tải → Quét kênh.",
@@ -673,6 +677,9 @@ class MainWindow(QMainWindow):
         url_row.addWidget(self._btn_scan)
         tl.addLayout(url_row)
 
+        # ── Banner trạng thái Cookie trực quan ──
+        tl.addWidget(self._build_cookie_banner())
+
         # Bộ lọc Viral
         tl.addWidget(self._build_filter_section())
 
@@ -777,6 +784,92 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────────────────────────────────
     # BỘ LỌC VIRAL (dùng trong Page Channel)
     # ─────────────────────────────────────────────────────────────────
+
+    def _build_cookie_banner(self) -> QFrame:
+        """Thanh trạng thái Cookie nổi bật ngay trên trang Quét kênh."""
+        c = COLORS
+        self._cookie_banner = QFrame()
+        self._cookie_banner.setObjectName("cookie_banner")
+        layout = QHBoxLayout(self._cookie_banner)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(10)
+
+        self._cookie_status_icon = QLabel("🍪")
+        self._cookie_status_icon.setStyleSheet("font-size: 14px;")
+        layout.addWidget(self._cookie_status_icon)
+
+        self._cookie_status_text = QLabel("Cookie: Chưa nạp (TikTok / Douyin yêu cầu Cookie để quét toàn bộ kênh)")
+        self._cookie_status_text.setStyleSheet(f"color: {c['accent_orange']}; font-size: 12px; font-weight: 500;")
+        layout.addWidget(self._cookie_status_text, 1)
+
+        self._btn_banner_load_cookie = QPushButton("🍪 Nạp Cookie (.txt)")
+        self._btn_banner_load_cookie.setFixedHeight(27)
+        self._btn_banner_load_cookie.setStyleSheet(self._s_small_btn())
+        self._btn_banner_load_cookie.clicked.connect(self._on_choose_cookie)
+        layout.addWidget(self._btn_banner_load_cookie)
+
+        self._btn_banner_guide_cookie = QPushButton("❓ Hướng dẫn lấy Cookie")
+        self._btn_banner_guide_cookie.setFixedHeight(27)
+        self._btn_banner_guide_cookie.setStyleSheet(self._s_small_btn())
+        self._btn_banner_guide_cookie.clicked.connect(self._show_cookie_guide)
+        layout.addWidget(self._btn_banner_guide_cookie)
+
+        self._btn_banner_clear_cookie = QPushButton("✕ Bỏ")
+        self._btn_banner_clear_cookie.setFixedHeight(27)
+        self._btn_banner_clear_cookie.setStyleSheet(self._s_small_btn())
+        self._btn_banner_clear_cookie.clicked.connect(self._on_clear_cookie)
+        self._btn_banner_clear_cookie.setVisible(False)
+        layout.addWidget(self._btn_banner_clear_cookie)
+
+        self._cookie_banner.setStyleSheet(f"""
+            QFrame#cookie_banner {{
+                background-color: rgba(245, 158, 11, 0.12);
+                border: 1px solid rgba(245, 158, 11, 0.35);
+                border-radius: 6px;
+            }}
+        """)
+        return self._cookie_banner
+
+    def _update_cookie_ui(self) -> None:
+        """Cập nhật giao diện thanh Cookie dựa trên self.cookies_path."""
+        if not hasattr(self, "_cookie_banner"):
+            return
+        c = COLORS
+        if self.cookies_path and os.path.isfile(self.cookies_path):
+            filename = os.path.basename(self.cookies_path)
+            self._cookie_status_icon.setText("✅")
+            self._cookie_status_text.setText(
+                f"Cookie: Đã nạp ({filename}) — Sẵn sàng quét kênh TikTok / Douyin / Facebook"
+            )
+            self._cookie_status_text.setStyleSheet(
+                f"color: {c['accent_green']}; font-size: 12px; font-weight: 600;"
+            )
+            self._cookie_banner.setStyleSheet(f"""
+                QFrame#cookie_banner {{
+                    background-color: rgba(34, 197, 94, 0.12);
+                    border: 1px solid rgba(34, 197, 94, 0.35);
+                    border-radius: 6px;
+                }}
+            """)
+            self._btn_banner_load_cookie.setText("🔄 Đổi Cookie")
+            self._btn_banner_clear_cookie.setVisible(True)
+        else:
+            self._cookie_status_icon.setText("🍪")
+            self._cookie_status_text.setText(
+                "Cookie: Chưa nạp (TikTok & Douyin yêu cầu Cookie để quét toàn bộ kênh)"
+            )
+            self._cookie_status_text.setStyleSheet(
+                f"color: {c['accent_orange']}; font-size: 12px; font-weight: 500;"
+            )
+            self._cookie_banner.setStyleSheet(f"""
+                QFrame#cookie_banner {{
+                    background-color: rgba(245, 158, 11, 0.12);
+                    border: 1px solid rgba(245, 158, 11, 0.35);
+                    border-radius: 6px;
+                }}
+            """)
+            self._btn_banner_load_cookie.setText("🍪 Nạp Cookie (.txt)")
+            self._btn_banner_clear_cookie.setVisible(False)
 
     def _build_filter_section(self) -> QGroupBox:
         c = COLORS
@@ -1058,17 +1151,36 @@ class MainWindow(QMainWindow):
             self._refresh_statusbar()
             self._append_log("HỆ THỐNG", f"Thư mục lưu đã đổi sang: {d}")
 
-    def _on_choose_cookie(self) -> None:
+    def _on_choose_cookie(self) -> bool:
         f, _ = QFileDialog.getOpenFileName(
             self, "Chọn file Cookie (.txt)", "",
             "Cookie file (*.txt);;Tất cả file (*.*)"
         )
         if f:
             self.cookies_path = f
+            self._update_cookie_ui()
             self._append_log("HỆ THỐNG", f"Đã nạp cookie: {os.path.basename(f)}")
             QMessageBox.information(
                 self, "Nạp Cookie thành công",
-                f"File cookie đã được nạp:\n{f}\n\nCookie sẽ được dùng cho lần tải tiếp theo."
+                f"File cookie đã được nạp thành công:\n{f}\n\nCookie sẽ được dùng cho tất cả các lần quét và tải tiếp theo."
+            )
+            return True
+        return False
+
+    def _on_clear_cookie(self) -> None:
+        self.cookies_path = ""
+        self._update_cookie_ui()
+        self._append_log("HỆ THỐNG", "Đã gỡ bỏ file cookie.")
+
+    def _show_cookie_guide(self) -> None:
+        dlg = CookieGuideDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_cookie_file:
+            self.cookies_path = dlg.selected_cookie_file
+            self._update_cookie_ui()
+            self._append_log("HỆ THỐNG", f"Đã nạp cookie: {os.path.basename(self.cookies_path)}")
+            QMessageBox.information(
+                self, "Nạp Cookie thành công",
+                f"File cookie đã được nạp thành công:\n{self.cookies_path}\n\nCookie sẽ được dùng cho các lần quét tiếp theo."
             )
 
     def _on_import_file(self) -> None:
@@ -1234,6 +1346,13 @@ class MainWindow(QMainWindow):
         if self._is_scanning:
             return
 
+        # Thử quét trước: Nếu đã nạp Cookie thì dùng, nếu chưa có thì quét trực tiếp
+        # Chỉ khi nào quét không được mới hiện thông báo yêu cầu Cookie trong _on_scan_error
+        if self.cookies_path:
+            self._append_log("HỆ THỐNG", f"Đang quét kênh (sử dụng Cookie đã nạp): {url}")
+        else:
+            self._append_log("HỆ THỐNG", f"Đang thử quét kênh trực tiếp không Cookie: {url}")
+
         self._result_table.setRowCount(0)
         self._scanned_videos = []
         self._lbl_scan_count.setText("0 video")
@@ -1345,7 +1464,46 @@ class MainWindow(QMainWindow):
             f"color:{COLORS['accent_red']}; font-size:12px; font-weight:600;"
         )
         self._append_log("HỆ THỐNG", f"Lỗi quét kênh: {error}")
-        QMessageBox.critical(self, "Lỗi quét kênh", f"Không thể lấy danh sách video:\n\n{error}")
+
+        # Kiểm tra nếu lỗi liên quan đến bảo mật Cookie hoặc bị chặn
+        url_curr = self._channel_url_input.text().strip().lower()
+        err_lower = error.lower()
+        is_cookie_block = (
+            "cookie" in err_lower
+            or "chặn" in err_lower
+            or "đăng nhập" in err_lower
+            or "truy cập" in err_lower
+            or not self.cookies_path
+        )
+        is_platform = (
+            "tiktok.com" in url_curr
+            or "douyin.com" in url_curr
+            or "facebook.com" in url_curr
+            or "fb.com" in url_curr
+        )
+
+        if "unable to extract secondary user id" in err_lower or "tiktok:user" in err_lower:
+            QMessageBox.warning(
+                self,
+                "TikTok chặn quét danh sách kênh",
+                "⚠️ TikTok hiện đang bật tường lửa chống cào dữ liệu tự động (Anti-Scraping WAF) "
+                "đối với trang cá nhân (@username), nên yt-dlp không thể tự động duyệt danh sách toàn bộ video của kênh này.\n\n"
+                "💡 GIẢI PHÁP ĐƠN GIẢN:\n"
+                "1. Bạn hãy copy đường link của các video cần tải trong kênh đó.\n"
+                "2. Chuyển sang tab 'Tải theo danh sách link' (Ctrl+1) và dán link vào.\n"
+                "3. Bấm 'Bắt đầu tải' — Tải trọn vẹn 100% Full HD không logo, không cần Cookie!"
+            )
+        elif is_cookie_block and is_platform:
+            fail_dlg = CookieFailedDialog(error_message=error, parent=self)
+            fail_dlg.exec()
+            if fail_dlg.action_result == CookieFailedDialog.ACTION_LOAD_COOKIE:
+                if self._on_choose_cookie():
+                    # Đã nạp thành công, tự động quét lại ngay
+                    QTimer.singleShot(250, self._on_scan_channel)
+            elif fail_dlg.action_result == CookieFailedDialog.ACTION_SHOW_GUIDE:
+                self._show_cookie_guide()
+        else:
+            QMessageBox.critical(self, "Lỗi quét kênh", f"Không thể lấy danh sách video:\n\n{error}")
 
     def _on_scan_worker_done(self) -> None:
         self._is_scanning = False

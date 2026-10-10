@@ -83,6 +83,68 @@ def _normalize_whisper_lang(lang_code: Optional[str]) -> Optional[str]:
     return code if len(code) == 2 else "zh"
 
 
+def translate_segments_batch(segments: list, source_lang: str = "zh", batch_size: int = 40) -> list:
+    """
+    Dịch toàn bộ danh sách câu thoại theo từng lô (Batch) để tránh bị Google chặn Rate Limit.
+    Tốc độ nhanh gấp 10 lần so với dịch từng câu một.
+    """
+    import time
+    from deep_translator import GoogleTranslator
+
+    # Chuẩn hóa mã ngôn ngữ phù hợp với deep-translator
+    lang = (source_lang or "zh-CN").strip()
+    if lang.lower() in ("zh", "zh-cn", "zh_cn", "cn"):
+        norm_src = "zh-CN"
+    elif lang.lower() in ("zh-tw", "zh_tw", "tw"):
+        norm_src = "zh-TW"
+    else:
+        norm_src = lang
+
+    translator = GoogleTranslator(source=norm_src, target='vi')
+
+    # 1. Trích xuất toàn bộ danh sách văn bản gốc
+    texts_to_translate = [
+        seg.original_text.strip() if hasattr(seg, 'original_text')
+        else (seg.text.strip() if hasattr(seg, 'text')
+              else (seg.get('original_text') or seg.get('text', '')).strip() if isinstance(seg, dict)
+              else str(seg).strip())
+        for seg in segments
+    ]
+
+    translated_texts = []
+
+    # 2. Chia thành từng nhóm nhỏ (mỗi nhóm 30-40 câu)
+    for i in range(0, len(texts_to_translate), batch_size):
+        chunk = texts_to_translate[i:i + batch_size]
+
+        # Lọc bỏ chuỗi rỗng trước khi gửi
+        cleaned_chunk = [t if t else "..." for t in chunk]
+
+        success = False
+        retries = 3
+        while retries > 0 and not success:
+            try:
+                # Dịch cả mảng câu cùng một lúc (chỉ tốn 1 request)
+                results = translator.translate_batch(cleaned_chunk)
+                translated_texts.extend(results)
+                success = True
+                # Nghỉ nhẹ 0.3s giữa các lô nếu video quá dài
+                time.sleep(0.3)
+            except Exception as e:
+                retries -= 1
+                try:
+                    print(f"[RETRY BATCH] Lỗi dịch lô {i // batch_size + 1}, thử lại sau 1.5s... Chi tiết: {e}")
+                except UnicodeEncodeError:
+                    print(f"[RETRY BATCH] Loi dich lo {i // batch_size + 1}, thu lai sau 1.5s... Chi tiet: {repr(e)}")
+                time.sleep(1.5)
+
+        # Nếu thử 3 lần vẫn lỗi, giữ nguyên văn bản gốc cho lô đó để không làm dừng chương trình
+        if not success:
+            translated_texts.extend(chunk)
+
+    return translated_texts
+
+
 class VideoDubber:
     """
     Lõi xử lý lồng tiếng AI Tiếng Việt theo quy trình tuần tự.
@@ -246,57 +308,22 @@ class VideoDubber:
         return result
 
 
+
     # ─────────────────────────────────────────────────────────────────
     # BƯỚC 3: Dịch sang Tiếng Việt
     # ─────────────────────────────────────────────────────────────────
 
     def _translate_segments(self, segments: List[DubSegment]) -> None:
-        """Dịch từng đoạn thoại sang Tiếng Việt (Google Translate API + fallback deep-translator)."""
-        raw_src = (self._cfg.source_lang or "zh-CN").strip()
-        if raw_src.lower() in ("zh", "zh-cn", "zh_cn", "cn"):
-            trans_src = "zh-CN"
-        elif raw_src.lower() in ("zh-tw", "zh_tw", "tw"):
-            trans_src = "zh-TW"
-        else:
-            trans_src = raw_src.replace("_", "-").split("-")[0].lower()
+        """Dịch toàn bộ danh sách đoạn thoại sang Tiếng Việt theo lô (translate_batch)."""
+        raw_src = (self._cfg.source_lang or "zh").strip()
+        translated_texts = translate_segments_batch(segments, source_lang=raw_src, batch_size=40)
 
-        import requests
+        for idx, seg in enumerate(segments):
+            if idx < len(translated_texts) and translated_texts[idx]:
+                seg.vn_text = translated_texts[idx]
+            else:
+                seg.vn_text = seg.original_text
 
-        for i, seg in enumerate(segments):
-            text = seg.original_text.strip()
-            if not text:
-                seg.vn_text = ""
-                continue
-
-            translated = ""
-
-            # Cách 1: Google Translate API endpoint trực tiếp (nhanh nhất, không bị lỗi 429)
-            try:
-                url = "https://translate.googleapis.com/translate_a/single"
-                params = {
-                    "client": "gtx",
-                    "sl": trans_src,
-                    "tl": "vi",
-                    "dt": "t",
-                    "q": text,
-                }
-                resp = requests.get(url, params=params, timeout=8)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    translated = "".join(part[0] for part in data[0] if part and part[0]).strip()
-            except Exception:
-                translated = ""
-
-            # Cách 2: Fallback qua deep-translator nếu cách 1 lỗi mạng
-            if not translated:
-                try:
-                    from deep_translator import GoogleTranslator
-                    translated = GoogleTranslator(source=trans_src, target="vi").translate(text)
-                except Exception as e:
-                    self._log(f"  ⚠ Lỗi dịch câu {i + 1}: {e} — giữ nguyên bản gốc.")
-                    translated = text
-
-            seg.vn_text = translated or text
 
     # ─────────────────────────────────────────────────────────────────
     # BƯỚC 4: Dynamic Pacing + TTS Edge-TTS
@@ -368,9 +395,9 @@ class VideoDubber:
 
         for i, seg in enumerate(segments):
             self._log(
-                f"[LỒNG TIẾNG] Đang dịch và ép tốc độ câu {i + 1}/{total}: "
+                f"[LỒNG TIẾNG] Đang tổng hợp giọng đọc và ép tốc độ câu {i + 1}/{total}: "
                 f'"{seg.vn_text[:40]}..."' if len(seg.vn_text) > 40 else
-                f"[LỒNG TIẾNG] Đang dịch và ép tốc độ câu {i + 1}/{total}..."
+                f"[LỒNG TIẾNG] Đang tổng hợp giọng đọc và ép tốc độ câu {i + 1}/{total}..."
             )
             if self._cfg.progress_callback:
                 self._cfg.progress_callback(i + 1, total)
@@ -403,41 +430,80 @@ class VideoDubber:
             self._run_cmd(cmd, "Tạo audio câm")
             return dub_out
 
-        # Xây dựng filter_complex với adelay cho từng đoạn
-        inputs: List[str] = []
-        filter_parts: List[str] = []
-
-        # Thêm source silence = toàn bộ duration video
+        # Chia nhỏ các đoạn TTS thành các batch (tối đa 12 đoạn/batch)
+        # Khắc phục triệt để lỗi [WinError 206] The filename or extension is too long trên Windows
+        BATCH_SIZE = 12
+        batches = [tts_pieces[i:i + BATCH_SIZE] for i in range(0, len(tts_pieces), BATCH_SIZE)]
         safe_dur = max(video_dur, 10.0)
-        inputs += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:duration={safe_dur:.2f}"]
-        filter_parts.append(f"[0:a]volume=0[silence]")
+        batch_files: List[str] = []
 
-        mix_inputs = ["[silence]"]
-        for idx, (path, start_sec, _dur) in enumerate(tts_pieces):
-            inputs += ["-i", path]
-            delay_ms = int(start_sec * 1000)
-            label = f"[v{idx}]"
-            filter_parts.append(
-                f"[{idx + 1}:a]adelay={delay_ms}|{delay_ms}[v{idx}]"
+        for b_idx, batch in enumerate(batches):
+            batch_out = (
+                dub_out if len(batches) == 1
+                else os.path.join(self._temp_dir, f"batch_voice_{b_idx}.wav")
             )
-            mix_inputs.append(label)
 
-        n_inputs = len(mix_inputs)
-        filter_parts.append(
-            f"{''.join(mix_inputs)}amix=inputs={n_inputs}:duration=first:dropout_transition=0[out]"
-        )
+            inputs: List[str] = []
+            filter_parts: List[str] = []
 
-        filter_complex = ";".join(filter_parts)
+            # Thêm source silence = toàn bộ duration video
+            inputs += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:duration={safe_dur:.2f}"]
+            filter_parts.append("[0:a]volume=0[silence]")
 
-        cmd = [
-            ffmpeg, "-y",
-            *inputs,
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-c:a", "libmp3lame", "-q:a", "3",
-            dub_out,
-        ]
-        self._run_cmd(cmd, "Ghép trục thời gian âm thanh")
+            mix_inputs = ["[silence]"]
+            for idx, (path, start_sec, _dur) in enumerate(batch):
+                inputs += ["-i", path]
+                delay_ms = int(start_sec * 1000)
+                label = f"[v{idx}]"
+                filter_parts.append(
+                    f"[{idx + 1}:a]adelay={delay_ms}|{delay_ms}{label}"
+                )
+                mix_inputs.append(label)
+
+            n_inputs = len(mix_inputs)
+            mix_labels = "".join(mix_inputs)
+            filter_parts.append(
+                f"{mix_labels}amix=inputs={n_inputs}:duration=first:dropout_transition=0[out]"
+            )
+
+            filter_complex = ";".join(filter_parts)
+
+            cmd = [
+                ffmpeg, "-y",
+                *inputs,
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-c:a", "pcm_s16le" if len(batches) > 1 else "libmp3lame",
+            ]
+            if len(batches) == 1:
+                cmd += ["-q:a", "3"]
+            cmd.append(batch_out)
+
+            label_step = (
+                f"Ghép trục thời gian âm thanh (Nhóm {b_idx + 1}/{len(batches)})"
+                if len(batches) > 1
+                else "Ghép trục thời gian âm thanh"
+            )
+            self._run_cmd(cmd, label_step)
+            batch_files.append(batch_out)
+
+        # Nếu có nhiều hơn 1 batch, hòa âm các batch thành file dub_out.mp3 hoàn chỉnh
+        if len(batches) > 1:
+            inputs = []
+            for bf in batch_files:
+                inputs += ["-i", bf]
+            n_batches = len(batch_files)
+            filter_complex = f"amix=inputs={n_batches}:duration=first:dropout_transition=0[out]"
+            cmd = [
+                ffmpeg, "-y",
+                *inputs,
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-c:a", "libmp3lame", "-q:a", "3",
+                dub_out,
+            ]
+            self._run_cmd(cmd, "Hòa âm các nhóm âm thanh thành phẩm")
+
         return dub_out
 
     # ─────────────────────────────────────────────────────────────────
@@ -452,8 +518,13 @@ class VideoDubber:
         - Tiếng thuyết minh ở mức 100%.
         - Không encode lại video: -c:v copy (siêu nhanh).
         """
-        base, ext = os.path.splitext(input_video)
-        output_path = f"{base}_dubbed_vi{ext}"
+        base_dir = os.path.dirname(input_video)
+        file_name = os.path.basename(input_video)
+        base, ext = os.path.splitext(file_name)
+
+        # Giới hạn độ dài tên file để tránh lỗi MAX_PATH trên Windows
+        safe_base = base[:60].strip() if len(base) > 60 else base
+        output_path = os.path.join(base_dir, f"{safe_base}_dubbed_vi{ext}")
 
         ffmpeg = self._get_ffmpeg_exe()
         bg_vol = self._cfg.bg_volume

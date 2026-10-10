@@ -62,8 +62,10 @@ from PyQt6.QtWidgets import (
 
 from core.dubber import DubConfig, check_dub_dependencies
 from core.dub_worker import DubWorker
+from core.license_manager import LicenseManager
 from core.parser import extract_urls, read_urls_from_file
 from core.worker import DownloadWorker, ScanChannelWorker
+from ui.activation_dialog import ActivationDialog
 from ui.cookie_dialog import CookieFailedDialog, CookieGuideDialog, CookiePromptDialog
 from ui.styles import COLORS, PLATFORM_COLORS
 
@@ -364,6 +366,9 @@ class MainWindow(QMainWindow):
         self._failed_urls: List[str] = []
         self._scanned_videos: List[Dict[str, Any]] = []
 
+        # ── Bản quyền ──
+        self._license_manager = LicenseManager()
+
         # ── Cấu hình người dùng (đồng bộ với DubbingDialog) ──
         self.output_dir: str = str(Path.home() / "Videos" / "OmniGrab_Downloads")
         self.cookies_path: str = ""
@@ -386,6 +391,7 @@ class MainWindow(QMainWindow):
         self._build_statusbar()
         self._connect_signals()
         self._refresh_statusbar()
+        self._update_license_statusbar()
         self._update_cookie_ui()
         self._append_log(
             "HỆ THỐNG",
@@ -514,6 +520,12 @@ class MainWindow(QMainWindow):
 
         # ── 4. Trợ giúp ──
         menu_help = bar.addMenu("Trợ giúp")
+
+        act_activate = QAction("🔑  Kích hoạt bản quyền...", self)
+        act_activate.triggered.connect(self._on_open_activation_dialog)
+        menu_help.addAction(act_activate)
+
+        menu_help.addSeparator()
 
         act_about = QAction("ℹ  Thông tin phần mềm (About)", self)
         act_about.triggered.connect(self._on_about)
@@ -1101,10 +1113,37 @@ class MainWindow(QMainWindow):
                 padding: 2px 8px;
             }}
         """)
-        # Chỉ hiển thị text tóm tắt — nút đặt trong right panel
+        # Thông tin thư mục + lồng tiếng
         self._sb_label = QLabel("📁 Lưu tại: —  |  🎙 Lồng tiếng: TắT")
         self._sb_label.setStyleSheet(f"color:{c['text_muted']}; padding: 0 4px;")
         sb.addWidget(self._sb_label)
+
+        # ── Nhãn bản quyền (bên phải StatusBar) ──
+        self._sb_license_label = QLabel("")
+        self._sb_license_label.setStyleSheet(
+            f"color:{c['text_muted']}; padding: 0 8px; font-size: 11px;"
+        )
+        # Nút Nâng cấp (ẩn khi đã PRO)
+        self._sb_upgrade_btn = QPushButton("⬆ Nâng cấp PRO")
+        self._sb_upgrade_btn.setFixedHeight(22)
+        self._sb_upgrade_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(245, 158, 11, 0.2);
+                color: {c['accent_orange']};
+                border: 1px solid {c['accent_orange']};
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(245, 158, 11, 0.35);
+            }}
+        """)
+        self._sb_upgrade_btn.clicked.connect(self._on_open_activation_dialog)
+        sb.addPermanentWidget(self._sb_license_label)
+        sb.addPermanentWidget(self._sb_upgrade_btn)
+
         self._status_bar = sb
 
     def _make_sb_sep(self) -> QFrame:
@@ -1264,6 +1303,52 @@ class MainWindow(QMainWindow):
         if ok:
             self.max_workers = val
             self._append_log("HỆ THỐNG", f"Số luồng tải đồng thời đã đổi thành: {val}")
+
+    # ══════════════════════════════════════════════════════════════════
+    # XỬ LÝ SỰ KIỆN — BẢN QUYỀN
+    # ══════════════════════════════════════════════════════════════════
+
+    def _on_open_activation_dialog(self) -> None:
+        """Mở dialog kích hoạt bản quyền."""
+        dlg = ActivationDialog(
+            parent=self,
+            on_activated_callback=self._on_license_activated,
+        )
+        dlg.exec()
+
+    def _on_license_activated(self) -> None:
+        """Callback khi kích hoạt bản quyền thành công."""
+        self._license_manager.invalidate_cache()
+        self._update_license_statusbar()
+        self._update_button_states()
+        self._append_log(
+            "HỆ THỐNG",
+            "✅ Bản quyền PRO đã được kích hoạt thành công!"
+        )
+
+    def _update_license_statusbar(self) -> None:
+        """Cập nhật nhãn bản quyền trên StatusBar."""
+        c = COLORS
+        is_licensed, status_text, expire_date, trial_remaining = \
+            self._license_manager.get_status(use_cache=False)
+
+        if is_licensed:
+            self._sb_license_label.setText(status_text)
+            self._sb_license_label.setStyleSheet(
+                f"color: {c['accent_green']}; padding: 0 8px; font-size: 11px; font-weight: 700;"
+            )
+            self._sb_upgrade_btn.setVisible(False)
+        else:
+            trial_text = f"{status_text}  "
+            self._sb_license_label.setText(trial_text)
+            if trial_remaining <= 3:
+                color = c['accent_red']
+            else:
+                color = c['accent_orange']
+            self._sb_license_label.setStyleSheet(
+                f"color: {color}; padding: 0 8px; font-size: 11px; font-weight: 600;"
+            )
+            self._sb_upgrade_btn.setVisible(True)
 
     # ══════════════════════════════════════════════════════════════════
     # XỬ LÝ SỰ KIỆN — MENU TRỢ GIÚP
@@ -1591,6 +1676,19 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════
 
     def _on_start_download(self) -> None:
+        # ── Kiểm tra bản quyền / lượt dùng thử trước khi tải ──
+        is_licensed, _, _, trial_remaining = \
+            self._license_manager.get_status(use_cache=False)
+        if not is_licensed and trial_remaining <= 0:
+            QMessageBox.warning(
+                self,
+                "Hết lượt dùng thử",
+                "🔒 Bạn đã sử dụng hết 10 lượt tải miễn phí.\n\n"
+                "Vui lòng kích hoạt bản quyền PRO để tiếp tục tải không giới hạn."
+            )
+            self._on_open_activation_dialog()
+            return
+
         if self._stack.currentIndex() == self.PAGE_LINKS:
             urls = extract_urls(self._url_input.toPlainText())
             if not urls:
@@ -1775,6 +1873,22 @@ class MainWindow(QMainWindow):
     def _on_item_finished(self, url: str, success: bool, error: str) -> None:
         if success:
             self._success_count += 1
+
+            # ── Trừ lượt dùng thử (nếu đang ở chế độ Trial) ──
+            is_licensed, _, _, _ = self._license_manager.get_status(use_cache=True)
+            if not is_licensed:
+                remaining = self._license_manager.consume_trial()
+                self._update_license_statusbar()
+                self._append_log(
+                    "HỆ THỐNG",
+                    f"🎁 Lượt dùng thử còn lại: {remaining}/10"
+                )
+                if remaining == 0:
+                    self._append_log(
+                        "HỆ THỐNG",
+                        "⚠ Đã hết lượt dùng thử. Vui lòng kích hoạt bản quyền PRO."
+                    )
+
             # Tự động lồng tiếng nếu bật
             if self.auto_dub and not self._is_dubbing:
                 try:

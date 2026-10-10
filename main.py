@@ -9,6 +9,15 @@ from __future__ import annotations
 import os
 import sys
 
+if sys.platform == "win32":
+    try:
+        if sys.stdout is not None:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stderr is not None:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Vá tương thích PyAV 19+ cho faster-whisper
 try:
     import av

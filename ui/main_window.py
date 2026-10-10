@@ -856,7 +856,7 @@ class MainWindow(QMainWindow):
         else:
             self._cookie_status_icon.setText("🍪")
             self._cookie_status_text.setText(
-                "Cookie: Chưa nạp (TikTok & Douyin yêu cầu Cookie để quét toàn bộ kênh)"
+                "Cookie: Chưa nạp (Kênh Douyin quét trực tiếp KHÔNG cần Cookie)"
             )
             self._cookie_status_text.setStyleSheet(
                 f"color: {c['accent_orange']}; font-size: 12px; font-weight: 500;"
@@ -1465,19 +1465,28 @@ class MainWindow(QMainWindow):
         )
         self._append_log("HỆ THỐNG", f"Lỗi quét kênh: {error}")
 
-        # Kiểm tra nếu lỗi liên quan đến bảo mật Cookie hoặc bị chặn
+        # Kiểm tra nếu lỗi do thiếu thư viện phụ thuộc
         url_curr = self._channel_url_input.text().strip().lower()
-        err_lower = error.lower()
+        err_lower = (error or "").lower()
+
+        is_missing_dep = (
+            "chưa được cài đặt" in err_lower
+            or "pip install" in err_lower
+            or "modulenotfound" in err_lower
+            or "importerror" in err_lower
+        )
         is_cookie_block = (
-            "cookie" in err_lower
-            or "chặn" in err_lower
-            or "đăng nhập" in err_lower
-            or "truy cập" in err_lower
-            or not self.cookies_path
+            not is_missing_dep
+            and (
+                "cookie" in err_lower
+                or "chặn" in err_lower
+                or "đăng nhập" in err_lower
+                or "truy cập" in err_lower
+                or not self.cookies_path
+            )
         )
         is_platform = (
             "tiktok.com" in url_curr
-            or "douyin.com" in url_curr
             or "facebook.com" in url_curr
             or "fb.com" in url_curr
         )

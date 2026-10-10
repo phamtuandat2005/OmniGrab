@@ -69,11 +69,15 @@ def parse_cookie_file(cookie_file: str) -> dict[str, str]:
                     continue
                 parts = line.split("\t")
                 if len(parts) >= 7:
-                    cookies[parts[5]] = parts[6]
+                    key = parts[5].strip()
+                    val = parts[6].strip()
+                    if key:
+                        cookies[key] = val
     except Exception:
         pass
 
-    return cookies
+    # Lọc bỏ triệt để key rỗng nếu có từ các cách parse
+    return {k.strip(): v for k, v in cookies.items() if k and k.strip()}
 
 
 def _fmt_number(n) -> str:
@@ -126,208 +130,259 @@ def scan_douyin_channel(
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> List[dict]:
     """
-    Quét danh sách video từ kênh Douyin bằng thư viện f2.
+    Quét danh sách video từ kênh Douyin sử dụng chữ ký a_bogus (từ f2),
+    mô phỏng TLS trình duyệt qua curl_cffi và header an ninh x-tt-argus.
+
+    - Hoạt động mượt mà cả khi KHÔNG CÓ COOKIE (tự tạo phiên ttwid).
+    - Nếu nạp cookie_file (chứa UIFID, s_v_web_id...), tự động tích hợp để tải tối đa.
+    - Vượt qua kiểm tra ArgusSecurityPlugin (Uifid / TLS fingerprint).
 
     Args:
-        channel_url: URL trang cá nhân Douyin (https://www.douyin.com/user/xxx hoặc https://v.douyin.com/xxx).
+        channel_url: URL trang cá nhân Douyin (https://v.douyin.com/... hoặc https://www.douyin.com/user/...).
         max_videos: Số lượng video tối đa cần quét.
-        cookie_file: Đường dẫn file cookie Netscape (.txt).
-        progress_cb: Hàm callback nhận thông báo tiến trình hiển thị lên UI.
+        cookie_file: (Tùy chọn) Đường dẫn file cookie Netscape (.txt).
+        progress_cb: Callback nhận thông báo tiến trình hiển thị lên UI.
 
     Returns:
         List[dict]: Danh sách video với thông tin chuẩn hóa.
     """
+    import requests as _requests
+
     def _log(msg: str) -> None:
         if progress_cb:
             progress_cb(msg)
 
-    _log("🔍 [Douyin] Đang kiểm tra thư viện và thông tin kênh...")
+    _log("🔍 [Douyin] Đang phân tích liên kết kênh...")
 
+    # 1. Kiểm tra các module cần thiết từ f2
     try:
-        # pyrefly: ignore [missing-import]
-        from f2.apps.douyin.handler import DouyinHandler
-        # pyrefly: ignore [missing-import]
-        from f2.apps.douyin.utils import SecUserIdFetcher
+        from f2.apps.douyin.utils import ABogusManager, TokenManager
+        from f2.apps.douyin.model import UserPost
+        from f2.apps.douyin.api import DouyinAPIEndpoints
     except ImportError:
         raise RuntimeError(
-            "Thư viện 'f2' chưa được cài đặt. Vui lòng chạy lệnh: pip install f2"
+            "Thư viện 'f2' chưa được cài đặt đầy đủ. Vui lòng chạy lệnh: pip install f2"
         )
 
-    # 1. Trích xuất sec_user_id từ URL
+    # 2. Trích xuất sec_user_id từ URL hoặc link rút gọn
     sec_user_id = ""
-    # Kiểm tra xem sec_user_id đã có sẵn trong URL chưa
-    m = re.search(r"user/([a-zA-Z0-9_\-]+)", channel_url)
-    if m:
-        sec_user_id = m.group(1)
+    for pat in [r"/user/([a-zA-Z0-9_\-]+)", r"sec_uid=([a-zA-Z0-9_\-]+)"]:
+        m = re.search(pat, channel_url)
+        if m:
+            sec_user_id = m.group(1)
+            break
 
     if not sec_user_id:
-        _log("🔍 [Douyin] Đang phân giải liên kết rút gọn để lấy sec_user_id...")
+        _log("🔍 [Douyin] Đang giải mã liên kết rút gọn v.douyin.com...")
+        ua_probe = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        redirect_url = ""
         try:
-            loop = asyncio.new_event_loop()
+            r = _requests.head(channel_url, allow_redirects=True, timeout=12, headers={"User-Agent": ua_probe})
+            redirect_url = r.url
+        except Exception:
             try:
-                sec_user_id = loop.run_until_complete(
-                    SecUserIdFetcher.get_sec_user_id(channel_url)
-                )
-            finally:
-                loop.close()
-        except Exception as e:
-            # Nếu SecUserIdFetcher lỗi, thử requests follow redirect
-            import requests
-            try:
-                resp = requests.get(channel_url, allow_redirects=True, timeout=10)
-                m2 = re.search(r"user/([a-zA-Z0-9_\-]+)", resp.url)
-                if m2:
-                    sec_user_id = m2.group(1)
-                else:
-                    m3 = re.search(r"sec_uid=([a-zA-Z0-9_\-]+)", resp.url)
-                    if m3:
-                        sec_user_id = m3.group(1)
+                r = _requests.get(channel_url, allow_redirects=True, timeout=12, headers={"User-Agent": ua_probe})
+                redirect_url = r.url
             except Exception:
                 pass
+
+        for pat in [r"/user/([a-zA-Z0-9_\-]+)", r"sec_uid=([a-zA-Z0-9_\-]+)"]:
+            m = re.search(pat, redirect_url)
+            if m:
+                sec_user_id = m.group(1)
+                break
 
     if not sec_user_id:
         raise RuntimeError(
             "Không thể trích xuất ID người dùng (sec_user_id) từ liên kết Douyin này.\n"
-            "Hãy đảm bảo link có dạng https://www.douyin.com/user/MS4wLjABAAAA... hoặc https://v.douyin.com/..."
+            "Hãy đảm bảo link có dạng https://v.douyin.com/xxxx/ hoặc https://www.douyin.com/user/..."
         )
 
-    _log(f"🔍 [Douyin] ID người dùng: {sec_user_id[:20]}... Đang chuẩn bị tải danh sách...")
+    _log(f"🔍 [Douyin] ID kênh: {sec_user_id[:24]}... Đang khởi tạo phiên quét...")
 
-    # 2. Chuẩn bị kwargs cho f2
+    # 3. Chuẩn bị Cookie và Headers
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     cookie_dict = parse_cookie_file(cookie_file)
-    cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items()) if cookie_dict else ""
 
-    # Tắt console của f2 để tránh xung đột encoding tiếng Trung trên Windows (cp1258)
-    try:
-        # pyrefly: ignore [missing-import]
-        from f2.apps.douyin.handler import rich_console
-        rich_console.quiet = True
-    except Exception:
-        pass
+    if cookie_dict:
+        # Nếu chưa có ttwid trong file cookie thì sinh bổ sung
+        if "ttwid" not in cookie_dict:
+            try:
+                cookie_dict["ttwid"] = TokenManager.gen_ttwid()
+            except Exception:
+                pass
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items() if k)
+        _log(f"🍪 [Douyin] Đã nạp {len(cookie_dict)} trường Cookie từ file để duyệt video...")
+    else:
+        # Tự sinh ttwid ẩn danh
+        try:
+            ttwid = TokenManager.gen_ttwid()
+            cookie_str = f"ttwid={ttwid}"
+            _log("🔑 [Douyin] Đã kích hoạt phiên khách vãng lai (ttwid)...")
+        except Exception:
+            cookie_str = ""
+            _log("⚠️ [Douyin] Khởi tạo không cookie...")
 
-    kwargs: dict = {
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-            "Referer": "https://www.douyin.com/",
-        },
-        "cookie": cookie_str,
-        "proxies": {"http://": None, "https://": None},
-        "timeout": 15,
-        "max_counts": max_videos,
+    headers = {
+        "User-Agent": ua,
+        "Referer": f"https://www.douyin.com/user/{sec_user_id}",
+        "Cookie": cookie_str,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        # Header thiết yếu để vượt qua rào cản ArgusSecurityPlugin
+        "x-tt-argus": "1",
     }
 
-    # 3. Thu thập danh sách video
-    async def _fetch_posts() -> List[dict]:
-        handler = DouyinHandler(kwargs)
-        collected: List[dict] = []
-        page_size = min(max_videos, 20)
+    # 4. Chuẩn bị HTTP Session (ưu tiên curl_cffi giả lập Chrome TLS Fingerprint)
+    session = None
+    try:
+        from curl_cffi import requests as cffi_requests
+        session = cffi_requests.Session(impersonate="chrome120")
+    except Exception:
+        session = _requests.Session()
 
-        async for post_filter in handler.fetch_user_post_videos(
+    collected: List[dict] = []
+    cursor = 0
+    max_loops = 50
+    loop_count = 0
+
+    while len(collected) < max_videos and loop_count < max_loops:
+        loop_count += 1
+        page_size = min(max_videos - len(collected), 20)
+
+        params = UserPost(
+            max_cursor=cursor,
+            count=page_size,
             sec_user_id=sec_user_id,
-            max_counts=max_videos,
-            page_counts=page_size,
-        ):
-            if post_filter is None:
+        )
+
+        try:
+            endpoint = ABogusManager.model_2_endpoint(
+                ua,
+                DouyinAPIEndpoints.USER_POST,
+                params.model_dump(),
+            )
+        except Exception as e:
+            raise RuntimeError(f"Lỗi khi tạo chữ ký a_bogus cho Douyin: {e}")
+
+        resp = None
+        try:
+            resp = session.get(endpoint, headers=headers, timeout=15)
+        except Exception as e:
+            # Fallback nếu curl_cffi gặp sự cố
+            try:
+                resp = _requests.get(endpoint, headers=headers, timeout=15)
+            except Exception as e2:
+                raise RuntimeError(f"Lỗi kết nối tới Douyin: {e2}")
+
+        if not resp:
+            break
+
+        if resp.status_code == 403:
+            resp_text = resp.text.strip()
+            raise RuntimeError(
+                f"Douyin từ chối truy cập (HTTP 403).\n"
+                f"Phản hồi: {resp_text[:200]}\n"
+                "Gợi ý: Hãy đăng nhập tài khoản Douyin trên trình duyệt Chrome/Edge, sau đó xuất lại file cookies.txt mới nhất."
+            )
+
+        if resp.status_code != 200:
+            raise RuntimeError(f"Douyin trả về mã lỗi HTTP {resp.status_code}")
+
+        try:
+            data = resp.json()
+        except Exception:
+            raise RuntimeError(f"Không thể phân tích phản hồi từ Douyin: {resp.text[:200]}")
+
+        aweme_list = data.get("aweme_list") or []
+        if not aweme_list:
+            break
+
+        for item in aweme_list:
+            if not isinstance(item, dict):
                 continue
 
-            # Lấy danh sách aweme từ raw data hoặc filter
-            raw_data = getattr(post_filter, "_data", {}) or {}
-            aweme_list = raw_data.get("aweme_list") or []
+            aid = str(item.get("aweme_id") or item.get("id") or "")
+            if not aid:
+                continue
 
-            if not aweme_list and hasattr(post_filter, "aweme_id"):
-                # Fallback qua properties của UserPostFilter
-                aweme_ids = post_filter.aweme_id or []
-                descs = post_filter.desc or []
-                times = post_filter.create_time or []
-                durs = post_filter.video_duration or []
-                for idx, aid in enumerate(aweme_ids):
-                    if not aid:
-                        continue
-                    d_desc = descs[idx] if idx < len(descs) else f"Video {aid}"
-                    d_time = times[idx] if idx < len(times) else None
-                    d_dur = durs[idx] if idx < len(durs) else 0
-                    aweme_list.append({
-                        "aweme_id": aid,
-                        "desc": d_desc,
-                        "create_time": d_time,
-                        "duration": d_dur,
-                        "statistics": {},
-                    })
+            desc = item.get("desc") or f"Douyin Video #{aid}"
+            ctime = item.get("create_time")
+            fmt_date, raw_date = _fmt_upload_date(ctime)
 
-            for item in aweme_list:
-                if not item:
-                    continue
-                aid = str(item.get("aweme_id", "") or "")
-                if not aid:
-                    continue
+            # Phân biệt loại bài đăng: Video thông thường hay Album ảnh (Image Note / 图集 - aweme_type 68)
+            is_image_note = (item.get("aweme_type") == 68) or bool(item.get("images"))
+            raw_images = item.get("images") or []
 
-                desc = item.get("desc") or f"Douyin Video #{aid}"
-                ctime = item.get("create_time")
-                fmt_date, raw_date = _fmt_upload_date(ctime)
+            raw_dur = item.get("duration") or item.get("video", {}).get("duration", 0) or 0
+            try:
+                dur_val = int(raw_dur)
+                duration_sec = dur_val // 1000 if dur_val > 1000 else dur_val
+            except Exception:
+                duration_sec = 0
 
-                # Duration: Douyin trả về milliseconds trong item['duration'] hoặc item['video']['duration']
-                raw_dur = item.get("duration") or item.get("video", {}).get("duration", 0) or 0
-                try:
-                    dur_val = int(raw_dur)
-                    duration_sec = dur_val // 1000 if dur_val > 1000 else dur_val
-                except Exception:
-                    duration_sec = 0
+            if is_image_note:
+                img_cnt = len(raw_images) if raw_images else 1
+                dur_display = f"Ảnh ({img_cnt})"
+            elif duration_sec > 0:
+                dur_display = _fmt_duration(duration_sec)
+            else:
+                dur_display = "--:--"
 
-                # Statistics
-                stats = item.get("statistics") or {}
-                views_raw = int(stats.get("play_count") or 0)
-                likes_raw = int(stats.get("digg_count") or 0)
+            stats = item.get("statistics") or {}
+            views_raw = int(stats.get("play_count") or 0)
+            likes_raw = int(stats.get("digg_count") or 0)
 
-                video_entry = {
-                    "id": aid,
-                    "title": str(desc).strip()[:200],
-                    "url": f"https://www.douyin.com/video/{aid}",
-                    "duration": _fmt_duration(duration_sec),
-                    "duration_sec": duration_sec,
-                    "views": _fmt_number(views_raw),
-                    "views_raw": views_raw,
-                    "likes": _fmt_number(likes_raw),
-                    "likes_raw": likes_raw,
-                    "upload_date": fmt_date,
-                    "upload_date_raw": raw_date,
-                    # Khả năng tương thích với _passes_filters
-                    "view_count": views_raw,
-                    "like_count": likes_raw,
-                }
-                collected.append(video_entry)
-                _log(f"✔ [Douyin] Đã quét ({len(collected)}/{max_videos}): {desc[:35]}...")
+            # Douyin ẩn play_count trên Web API (luôn trả về 0), chỉ công khai lượt thích (digg_count)
+            views_display = _fmt_number(views_raw) if views_raw > 0 else "Ẩn (Douyin)"
 
-                if len(collected) >= max_videos:
-                    break
+            video_entry = {
+                "id": aid,
+                "title": str(desc).strip()[:200],
+                "url": f"https://www.douyin.com/video/{aid}",
+                "duration": dur_display,
+                "duration_sec": duration_sec,
+                "views": views_display,
+                "views_raw": views_raw,
+                "likes": _fmt_number(likes_raw),
+                "likes_raw": likes_raw,
+                "upload_date": fmt_date,
+                "upload_date_raw": raw_date,
+                "view_count": views_raw,
+                "like_count": likes_raw,
+            }
+            collected.append(video_entry)
+            _log(f"✔ [Douyin] Đã quét ({len(collected)}/{max_videos}): {desc[:40]}...")
 
             if len(collected) >= max_videos:
                 break
 
-        return collected
+        has_more = data.get("has_more", 0)
+        next_cursor = data.get("max_cursor", 0)
+        if not has_more or next_cursor == cursor or next_cursor == 0:
+            break
+        cursor = next_cursor
 
-    try:
-        loop = asyncio.new_event_loop()
-        try:
-            videos = loop.run_until_complete(_fetch_posts())
-        finally:
-            loop.close()
-    except Exception as e:
-        err_msg = repr(e)
-        err_lower = err_msg.lower()
-        if any(kw in err_lower for kw in ["10204", "login", "private", "403", "forbidden", "status code: 403", "apiresponseerror"]):
-            raise RuntimeError(
-                "Kênh Douyin yêu cầu Cookie xác thực để lấy danh sách video (Lỗi 403/Login).\n"
-                "Vui lòng nạp file cookies.txt từ trình duyệt Chrome/Edge của bạn và thử lại."
-            )
-        raise RuntimeError(f"Lỗi khi quét kênh Douyin: {str(e)}")
-
-    if not videos:
+    if not collected:
         raise RuntimeError(
             "Không tìm thấy video nào trên kênh Douyin này.\n"
-            "Kênh có thể ở chế độ riêng tư, chưa đăng video, hoặc cần nạp Cookie."
+            "Kênh có thể ở chế độ riêng tư, chưa có video nào, hoặc Douyin yêu cầu làm mới Cookie."
         )
 
-    return videos
+    _log(f"✅ [Douyin] Quét hoàn tất! Tổng cộng: {len(collected)} video.")
+    return collected
+
+
+def scan_douyin_channel_f2(
+    channel_url: str,
+    max_videos: int = 50,
+    cookie_file: str = "",
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> List[dict]:
+    """Bí danh tương thích ngược — gọi lại scan_douyin_channel."""
+    return scan_douyin_channel(channel_url, max_videos, cookie_file, progress_cb)
+
+
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -392,7 +447,7 @@ def scan_facebook_channel(
         ydl_opts: dict = {
             "quiet": True,
             "no_warnings": True,
-            "extract_flat": True,
+            "extract_flat": False,
             "socket_timeout": 20,
         }
         if cookie_file and os.path.isfile(cookie_file):

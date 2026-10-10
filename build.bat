@@ -66,7 +66,7 @@ goto MENU
 echo.
 echo Dang dong goi tieu chuan voi PyInstaller (--onefile)...
 pip install pyinstaller --quiet --upgrade
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai!
     pause
@@ -89,7 +89,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [2/3] Bat dau bien dich ma nguon Python sang C++ (Co the mat nhieu phut)...
-nuitka --standalone --onefile --enable-plugin=pyqt6 --include-package=yt_dlp --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --include-data-files=ffmpeg.exe=ffmpeg.exe --include-data-files=ffprobe.exe=ffprobe.exe --remove-output --lto=no --windows-disable-console main.py
+nuitka --standalone --onefile --enable-plugin=pyqt6 --include-package=yt_dlp --include-package=curl_cffi --include-package=f2 --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --include-data-files=ffmpeg.exe=ffmpeg.exe --include-data-files=ffprobe.exe=ffprobe.exe --remove-output --lto=no --windows-disable-console main.py
 if errorlevel 1 (
     echo.
     echo [LOI] Bien dich that bai! Vui long kiem tra log C++ compiler.
@@ -120,7 +120,7 @@ xcopy /s /i /y assets dist_obfuscated\assets >nul
 
 echo [3/3] Dang dong goi code da ma hoa bang PyInstaller...
 cd dist_obfuscated
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" --add-binary "..\ffmpeg.exe;." --add-binary "..\ffprobe.exe;." --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" --add-binary "..\ffmpeg.exe;." --add-binary "..\ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai.
     pause

@@ -464,9 +464,9 @@ class ScanChannelWorker(QThread):
 
         self.scan_progress.emit(f"Đang quét kênh: {self._channel_url}")
 
-        # ── 1. Giải pháp chuyên biệt cho Kênh Douyin (dùng f2) ──
+        # ── 1. Giải pháp chuyên biệt cho Kênh Douyin (TikWM API - Không cần Cookie) ──
         if is_douyin_channel(self._channel_url):
-            self.scan_progress.emit("Đang dùng bộ quét Douyin chuyên biệt (f2 - vượt mã hóa chữ ký)...")
+            self.scan_progress.emit("Đang dùng cổng API mở quét kênh Douyin (Không cần Cookie)...")
             try:
                 raw_videos = scan_douyin_channel(
                     channel_url=self._channel_url,

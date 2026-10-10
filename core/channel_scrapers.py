@@ -197,7 +197,19 @@ def scan_douyin_channel(
     cookie_dict = parse_cookie_file(cookie_file)
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items()) if cookie_dict else ""
 
+    # Tắt console của f2 để tránh xung đột encoding tiếng Trung trên Windows (cp1258)
+    try:
+        # pyrefly: ignore [missing-import]
+        from f2.apps.douyin.handler import rich_console
+        rich_console.quiet = True
+    except Exception:
+        pass
+
     kwargs: dict = {
+        "headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Referer": "https://www.douyin.com/",
+        },
         "cookie": cookie_str,
         "proxies": {"http://": None, "https://": None},
         "timeout": 15,
@@ -300,13 +312,14 @@ def scan_douyin_channel(
         finally:
             loop.close()
     except Exception as e:
-        err_msg = str(e)
-        if "10204" in err_msg or "login" in err_msg.lower() or "private" in err_msg.lower():
+        err_msg = repr(e)
+        err_lower = err_msg.lower()
+        if any(kw in err_lower for kw in ["10204", "login", "private", "403", "forbidden", "status code: 403", "apiresponseerror"]):
             raise RuntimeError(
-                "Kênh Douyin yêu cầu đăng nhập hoặc Cookie xác thực đã hết hạn.\n"
-                "Vui lòng xuất lại file cookies.txt từ trình duyệt và nạp vào ứng dụng."
+                "Kênh Douyin yêu cầu Cookie xác thực để lấy danh sách video (Lỗi 403/Login).\n"
+                "Vui lòng nạp file cookies.txt từ trình duyệt Chrome/Edge của bạn và thử lại."
             )
-        raise RuntimeError(f"Lỗi khi quét kênh Douyin qua f2: {err_msg}")
+        raise RuntimeError(f"Lỗi khi quét kênh Douyin: {str(e)}")
 
     if not videos:
         raise RuntimeError(

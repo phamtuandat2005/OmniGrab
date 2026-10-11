@@ -66,7 +66,7 @@ goto MENU
 echo.
 echo Dang dong goi tieu chuan voi PyInstaller (--onefile)...
 pip install pyinstaller --quiet --upgrade
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai!
     pause
@@ -120,7 +120,7 @@ xcopy /s /i /y assets dist_obfuscated\assets >nul
 
 echo [3/3] Dang dong goi code da ma hoa bang PyInstaller...
 cd dist_obfuscated
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" --add-binary "..\ffmpeg.exe;." --add-binary "..\ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" --add-binary "..\ffmpeg.exe;." --add-binary "..\ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai.
     pause

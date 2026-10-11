@@ -334,9 +334,9 @@ class ActivationDialog(QDialog):
         bl.addWidget(lbl_bank_head)
 
         bank_info = [
-            ("Ngân hàng",     "Vietcombank (VCB)"),
-            ("Số tài khoản",  "1234 5678 90"),
-            ("Chủ tài khoản", "NGUYEN VAN A"),
+            ("Ngân hàng",     "MB Bank"),
+            ("Số tài khoản",  ""),
+            ("Chủ tài khoản", "PHẠM TUẤN ĐẠT"),
         ]
         for label, value in bank_info:
             row = QHBoxLayout()
@@ -522,9 +522,9 @@ class ActivationDialog(QDialog):
             self,
             "Liên hệ Admin",
             "💬 Liên hệ Admin để nhận License Key kích hoạt:\n\n"
-            "  • Zalo / Hotline : 09xx.xxx.xxx\n"
-            "  • Telegram       : @omnigrab_support\n"
-            "  • Email          : support@omnigrab.vn\n\n"
+            "  • Zalo / Hotline : 0342374729\n"
+            "  • Telegram       : @pamtuandat\n"
+            "  • Email          : phamtuandat.me@gmail.com\n\n"
             "Vui lòng gửi kèm:\n"
             f"  1. Mã thiết bị: {self._machine_id}\n"
             "  2. Ảnh chụp màn hình giao dịch chuyển khoản\n\n"

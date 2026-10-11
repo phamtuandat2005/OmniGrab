@@ -12,6 +12,7 @@ core/worker.py - QThread xử lý tải đa luồng nền.
 from __future__ import annotations
 
 import time
+import os
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -49,6 +50,11 @@ class DownloadWorker(QThread):
         max_workers: int = 2,
         audio_only: bool = False,
         file_template: str = "%(extractor)s_%(title).40s_%(id)s.%(ext)s",
+        auto_dub: bool = False,
+        dub_lang: str = "zh",
+        dub_voice: str = "vi",
+        whisper_model: str = "base",
+        gemini_api_key: str = "",
         parent: Optional[Any] = None,
     ) -> None:
         """
@@ -59,6 +65,10 @@ class DownloadWorker(QThread):
             output_dir: Thư mục lưu video.
             cookie_file: Đường dẫn file cookie (tùy chọn).
             max_workers: Số luồng tải đồng thời.
+            auto_dub: Tự động lồng tiếng Tiếng Việt sau khi tải xong.
+            dub_lang: Ngôn ngữ gốc của video.
+            dub_voice: Giọng đọc gTTS.
+            whisper_model: Model Whisper nhận diện.
             parent: QObject cha.
         """
         super().__init__(parent)
@@ -68,6 +78,12 @@ class DownloadWorker(QThread):
         self._max_workers = max_workers
         self._audio_only = audio_only
         self._file_template = file_template
+        self.auto_dub = auto_dub
+        self.dub_lang = dub_lang
+        self.dub_voice = dub_voice
+        self.whisper_model = whisper_model
+        self.gemini_api_key = gemini_api_key
+        self._dubber: Optional[Any] = None
         self._stop_requested = False
         self._failed_urls: List[str] = []
 
@@ -131,6 +147,34 @@ class DownloadWorker(QThread):
                             success_count += 1
                             title = result.get("title", "")
                             file_path = result.get("file_path", "")
+
+                            # Tự động lồng tiếng chuẩn AutoDub nếu bật tùy chọn
+                            if self.auto_dub and file_path and os.path.isfile(file_path) and file_path.lower().endswith(".mp4"):
+                                if self._dubber is None:
+                                    from core.dubber import OmniDubber
+                                    self._dubber = OmniDubber(
+                                        whisper_model_size=self.whisper_model,
+                                        gemini_api_key=self.gemini_api_key,
+                                    )
+
+                                base, ext = os.path.splitext(file_path)
+                                dubbed_path = f"{base}_dubbed{ext}"
+                                self._log(f"🎙 Bắt đầu lồng tiếng tự động: {os.path.basename(file_path)}")
+                                try:
+                                    ok = self._dubber.process_dubbing(
+                                        input_video=file_path,
+                                        output_video=dubbed_path,
+                                        source_lang=self.dub_lang,
+                                        voice=self.dub_voice,
+                                        gemini_api_key=self.gemini_api_key,
+                                        progress_callback=self._log,
+                                    )
+                                    if ok and os.path.isfile(dubbed_path):
+                                        file_path = dubbed_path
+                                        self._log(f"✅ Lồng tiếng hoàn tất: {os.path.basename(dubbed_path)}")
+                                except Exception as d_err:
+                                    self._log(f"⚠ Lỗi lồng tiếng cho {os.path.basename(file_path)}: {d_err}")
+
                             self.item_finished.emit(url, True, file_path)
                             self._log(
                                 f"✅ [{completed}/{total}] Tải thành công: "

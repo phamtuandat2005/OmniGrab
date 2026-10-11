@@ -3,10 +3,12 @@ yt-dlp>=2024.01.01
 pyinstaller>=6.0.0
 curl_cffi>=0.7.1
 faster-whisper>=1.0.0
-edge-tts>=6.1.0
+gTTS>=2.5.0
 deep-translator>=1.11.0
 onnxruntime>=1.16.0
 f2>=0.0.1.7
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 cryptography>=41.0.0
+pydub>=0.25.1
+audioop-lts>=0.2.2; python_version>='3.13'

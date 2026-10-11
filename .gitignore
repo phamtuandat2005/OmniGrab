@@ -39,6 +39,7 @@ desktop.ini
 *.tmp
 *.bak
 danh_sach_loi.txt
+test/
 
 # Executables
 *.exe

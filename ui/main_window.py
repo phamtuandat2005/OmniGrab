@@ -13,6 +13,7 @@ Ngôn ngữ giao diện: 100% Tiếng Việt.
 from __future__ import annotations
 
 import csv
+import json
 import os
 import subprocess
 import sys
@@ -21,9 +22,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # pyrefly: ignore [missing-import]
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
 # pyrefly: ignore [missing-import]
-from PyQt6.QtGui import QAction, QFont, QTextCursor, QColor, QKeySequence
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QTextCursor, QDesktopServices
 # pyrefly: ignore [missing-import]
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -56,18 +57,21 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
-    QHBoxLayout,
     QWidget,
 )
 
-from core.dubber import DubConfig, check_dub_dependencies
+from core.dubber import DubConfig, DubSegment, check_dub_dependencies
 from core.dub_worker import DubWorker
 from core.license_manager import LicenseManager
 from core.parser import extract_urls, read_urls_from_file
+from core.security import get_resource_path
 from core.worker import DownloadWorker, ScanChannelWorker
 from ui.activation_dialog import ActivationDialog
 from ui.cookie_dialog import CookieFailedDialog, CookieGuideDialog, CookiePromptDialog
+from ui.dubbing_studio import DubbingStudioWidget
 from ui.styles import COLORS, PLATFORM_COLORS
+
+_SETTINGS_FILE = Path.home() / ".omnigrab_settings.json"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -87,11 +91,12 @@ class DubbingDialog(QDialog):
         voice: str,
         bg_volume: int,
         whisper_model: str,
+        gemini_api_key: str = "",
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Cài đặt & Lồng tiếng AI Tiếng Việt")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(600)
         self.setModal(True)
 
         # Lưu giá trị trả về
@@ -100,8 +105,9 @@ class DubbingDialog(QDialog):
         self.result_voice = voice
         self.result_bg_volume = bg_volume
         self.result_whisper_model = whisper_model
+        self.result_gemini_api_key = gemini_api_key
 
-        self._build_ui(auto_dub, src_lang, voice, bg_volume, whisper_model)
+        self._build_ui(auto_dub, src_lang, voice, bg_volume, whisper_model, gemini_api_key)
 
     # ─────────────── Build UI ───────────────
 
@@ -112,6 +118,7 @@ class DubbingDialog(QDialog):
         voice: str,
         bg_volume: int,
         whisper_model: str,
+        gemini_api_key: str = "",
     ) -> None:
         c = COLORS
         self.setStyleSheet(f"""
@@ -126,7 +133,7 @@ class DubbingDialog(QDialog):
                 color: {c['text_secondary']};
                 font-size: 13px;
             }}
-            QComboBox, QSpinBox {{
+            QComboBox, QSpinBox, QLineEdit {{
                 background-color: {c['bg_input']};
                 color: {c['text_primary']};
                 border: 1px solid {c['bg_input_border']};
@@ -134,7 +141,7 @@ class DubbingDialog(QDialog):
                 padding: 6px 10px;
                 font-size: 13px;
             }}
-            QComboBox:focus, QSpinBox:focus {{
+            QComboBox:focus, QSpinBox:focus, QLineEdit:focus {{
                 border-color: {c['border_focus']};
             }}
             QComboBox::drop-down {{
@@ -213,13 +220,14 @@ class DubbingDialog(QDialog):
         grid.addWidget(self._combo_lang, 0, 1)
 
         # Giọng đọc
-        grid.addWidget(self._lbl("Giọng đọc AI (Edge-TTS):"), 1, 0)
+        grid.addWidget(self._lbl("Giọng đọc AI:"), 1, 0)
         self._combo_voice = QComboBox()
-        self._combo_voice.addItem("👩  Nữ — Hoài My (Truyền cảm)", "vi-VN-HoaiMyNeural")
-        self._combo_voice.addItem("👨  Nam — Nam Minh (Tin tức)", "vi-VN-NamMinhNeural")
+        self._combo_voice.addItem("🌐  Giọng Google Tiếng Việt (Chuẩn, tốc độ cao)", "vi")
         idx_v = self._combo_voice.findData(voice)
         if idx_v >= 0:
             self._combo_voice.setCurrentIndex(idx_v)
+        else:
+            self._combo_voice.setCurrentIndex(0)
         grid.addWidget(self._combo_voice, 1, 1)
 
         # Whisper model
@@ -227,7 +235,7 @@ class DubbingDialog(QDialog):
         self._combo_model = QComboBox()
         self._combo_model.addItem("⚡  tiny — Nhanh nhất", "tiny")
         self._combo_model.addItem("🎯  base — Cân bằng (khuyến nghị)", "base")
-        self._combo_model.addItem("🔬  small — Chính xác nhất (chậm hơn)", "small")
+        self._combo_model.addItem("🔬  medium — Chính xác cao nhất (nét)", "medium")
         idx_m = self._combo_model.findData(whisper_model)
         if idx_m >= 0:
             self._combo_model.setCurrentIndex(idx_m)
@@ -252,6 +260,72 @@ class DubbingDialog(QDialog):
         vol_w = QWidget()
         vol_w.setLayout(vol_row)
         grid.addWidget(vol_w, 3, 1)
+
+        # Gemini API Key
+        grid.addWidget(self._lbl("Gemini API Key (Miễn phí):"), 4, 0)
+        key_box = QVBoxLayout()
+        key_box.setSpacing(4)
+
+        key_row = QHBoxLayout()
+        key_row.setSpacing(6)
+
+        self._txt_key = QLineEdit()
+        self._txt_key.setPlaceholderText("Dán Gemini API Key từ Google AI Studio (AIzaSy...)")
+        self._txt_key.setText(gemini_api_key)
+        self._txt_key.setEchoMode(QLineEdit.EchoMode.Password)
+        key_row.addWidget(self._txt_key, 1)
+
+        self._btn_toggle_key = QPushButton("👁")
+        self._btn_toggle_key.setToolTip("Ẩn/Hiện API Key")
+        self._btn_toggle_key.setFixedWidth(36)
+        self._btn_toggle_key.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['bg_input']};
+                color: {c['text_primary']};
+                border: 1px solid {c['bg_input_border']};
+                border-radius: 6px;
+                padding: 6px 0px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                border-color: {c['border_focus']};
+            }}
+        """)
+        self._btn_toggle_key.clicked.connect(self._toggle_key_visibility)
+        key_row.addWidget(self._btn_toggle_key)
+
+        btn_get_key = QPushButton("🔗 Lấy key (30s)")
+        btn_get_key.setToolTip("Mở Google AI Studio để lấy API Key miễn phí 0đ")
+        btn_get_key.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['accent_blue']};
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {c['btn_secondary_hover']};
+            }}
+        """)
+        btn_get_key.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://aistudio.google.com/app/apikey"))
+        )
+        key_row.addWidget(btn_get_key)
+
+        key_w = QWidget()
+        key_w.setLayout(key_row)
+        key_box.addWidget(key_w)
+
+        lbl_hint = QLabel("💡 Miễn phí 0đ từ Google AI Studio, dịch 150 câu chỉ 1-2s, chuẩn xưng hô Hán-Việt.")
+        lbl_hint.setStyleSheet(f"color:{c['accent_green']}; font-size:11px;")
+        key_box.addWidget(lbl_hint)
+
+        key_container = QWidget()
+        key_container.setLayout(key_box)
+        grid.addWidget(key_container, 4, 1)
 
         grid.setColumnStretch(1, 1)
         root.addLayout(grid)
@@ -295,6 +369,14 @@ class DubbingDialog(QDialog):
 
     # ─────────────── Helpers ───────────────
 
+    def _toggle_key_visibility(self) -> None:
+        if self._txt_key.echoMode() == QLineEdit.EchoMode.Password:
+            self._txt_key.setEchoMode(QLineEdit.EchoMode.Normal)
+            self._btn_toggle_key.setText("🔒")
+        else:
+            self._txt_key.setEchoMode(QLineEdit.EchoMode.Password)
+            self._btn_toggle_key.setText("👁")
+
     def _lbl(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setStyleSheet(f"color:{COLORS['text_secondary']}; font-size:13px;")
@@ -319,7 +401,7 @@ class DubbingDialog(QDialog):
             else:
                 self._lbl_dep_status.setText(
                     f"⚠ Chưa cài: {', '.join(missing)}. "
-                    "Chạy: pip install faster-whisper edge-tts deep-translator"
+                    "Chạy: pip install faster-whisper gTTS requests pydub"
                 )
                 self._lbl_dep_status.setStyleSheet(
                     f"color:{c['accent_orange']}; font-size:12px; font-weight:600;"
@@ -330,9 +412,10 @@ class DubbingDialog(QDialog):
     def _save_and_accept(self) -> None:
         self.result_auto_dub = self._chk_auto.isChecked()
         self.result_src_lang = self._combo_lang.currentData() or "zh-CN"
-        self.result_voice = self._combo_voice.currentData() or "vi-VN-HoaiMyNeural"
+        self.result_voice = self._combo_voice.currentData() or "vi"
         self.result_bg_volume = self._slider_vol.value()
         self.result_whisper_model = self._combo_model.currentData() or "base"
+        self.result_gemini_api_key = self._txt_key.text().strip()
         self.accept()
 
 
@@ -346,6 +429,7 @@ class MainWindow(QMainWindow):
     # ────────── Trang QStackedWidget ──────────
     PAGE_LINKS = 0
     PAGE_CHANNEL = 1
+    PAGE_STUDIO = 2
 
     def __init__(self) -> None:
         super().__init__()
@@ -354,6 +438,7 @@ class MainWindow(QMainWindow):
         self._worker: Optional[DownloadWorker] = None
         self._scan_worker: Optional[ScanChannelWorker] = None
         self._dub_worker: Optional[DubWorker] = None
+        self.dubbing_worker: Optional[DubWorker] = None
 
         self._is_downloading = False
         self._is_scanning = False
@@ -374,12 +459,16 @@ class MainWindow(QMainWindow):
         self.cookies_path: str = ""
         self.auto_dub: bool = False
         self.dub_lang: str = "zh-CN"
-        self.dub_voice: str = "vi-VN-HoaiMyNeural"
+        self.dub_voice: str = "vi"
         self.bg_volume: int = 12              # % (0-30)
         self.whisper_model: str = "base"
+        self.gemini_api_key: str = ""
         self.max_workers: int = 3
 
-        # Tạo thư mục mặc định
+        # Nạp cài đặt đã lưu từ phiên trước
+        self._load_settings()
+
+        # Tạo thư mục lưu video
         try:
             os.makedirs(self.output_dir, exist_ok=True)
         except OSError:
@@ -399,6 +488,94 @@ class MainWindow(QMainWindow):
         )
 
     # ══════════════════════════════════════════════════════════════════
+    # CẤU HÌNH NGƯỜI DÙNG (PERSISTENCE)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _load_settings(self) -> None:
+        """Nạp cấu hình đã lưu từ JSON / QSettings."""
+        data: Dict[str, Any] = {}
+        if _SETTINGS_FILE.is_file():
+            try:
+                with open(_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+
+        qs = QSettings("OmniGrab", "OmniGrab")
+
+        # 1. Tự động lồng tiếng
+        if "auto_dub" in data:
+            self.auto_dub = bool(data["auto_dub"])
+        else:
+            self.auto_dub = qs.value("auto_dub", False, type=bool)
+
+        # 2. Ngôn ngữ gốc video
+        self.dub_lang = str(data.get("dub_lang") or qs.value("dub_lang", "zh-CN", type=str) or "zh-CN")
+
+        # 3. Giọng đọc gTTS
+        saved_voice = str(data.get("dub_voice") or qs.value("dub_voice", "vi", type=str) or "vi")
+        self.dub_voice = "vi" if ("hoaimy" in saved_voice.lower() or "neural" in saved_voice.lower()) else saved_voice
+
+        # 4. Âm lượng Ducking
+        raw_vol = data.get("bg_volume") if "bg_volume" in data else qs.value("bg_volume", 12, type=int)
+        try:
+            self.bg_volume = max(0, min(30, int(raw_vol)))
+        except (ValueError, TypeError):
+            self.bg_volume = 12
+
+        # 5. Whisper Model
+        self.whisper_model = str(data.get("whisper_model") or qs.value("whisper_model", "base", type=str) or "base")
+
+        # 6. Thư mục lưu
+        saved_dir = str(data.get("output_dir") or qs.value("output_dir", "", type=str) or "")
+        if saved_dir and os.path.isdir(saved_dir):
+            self.output_dir = saved_dir
+
+        # 7. File Cookie
+        saved_cookie = str(data.get("cookies_path") or qs.value("cookies_path", "", type=str) or "")
+        if saved_cookie and os.path.isfile(saved_cookie):
+            self.cookies_path = saved_cookie
+
+        # 8. Số luồng tải đồng thời
+        raw_workers = data.get("max_workers") if "max_workers" in data else qs.value("max_workers", 3, type=int)
+        try:
+            self.max_workers = max(1, min(10, int(raw_workers)))
+        except (ValueError, TypeError):
+            self.max_workers = 3
+
+        # 9. Gemini API Key (Miễn phí 0đ)
+        self.gemini_api_key = str(data.get("gemini_api_key") or qs.value("gemini_api_key", "", type=str) or "")
+
+    def _save_settings(self) -> None:
+        """Lưu toàn bộ cài đặt người dùng vào JSON và QSettings."""
+        payload = {
+            "auto_dub": self.auto_dub,
+            "dub_lang": self.dub_lang,
+            "dub_voice": self.dub_voice,
+            "bg_volume": self.bg_volume,
+            "whisper_model": self.whisper_model,
+            "gemini_api_key": self.gemini_api_key,
+            "output_dir": self.output_dir,
+            "cookies_path": self.cookies_path,
+            "max_workers": self.max_workers,
+        }
+        # Lưu ra file JSON
+        try:
+            with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+        # Lưu đồng bộ vào QSettings
+        try:
+            qs = QSettings("OmniGrab", "OmniGrab")
+            for k, v in payload.items():
+                qs.setValue(k, v)
+            qs.sync()
+        except Exception:
+            pass
+
+    # ══════════════════════════════════════════════════════════════════
     # THIẾT LẬP CỬA SỔ
     # ══════════════════════════════════════════════════════════════════
 
@@ -409,6 +586,17 @@ class MainWindow(QMainWindow):
         )
         self.setMinimumSize(1100, 660)
         self.resize(1280, 760)
+
+        # Thiết lập Icon cho cửa sổ và Taskbar
+        ico_path = get_resource_path("assets/icon.ico")
+        png_path = get_resource_path("assets/icon.png")
+        win_icon = QIcon()
+        if os.path.isfile(ico_path):
+            win_icon.addFile(ico_path)
+        if os.path.isfile(png_path):
+            win_icon.addFile(png_path)
+        if not win_icon.isNull():
+            self.setWindowIcon(win_icon)
 
     # ══════════════════════════════════════════════════════════════════
     # MENU BAR
@@ -484,15 +672,20 @@ class MainWindow(QMainWindow):
         # ── 2. Chế độ tải ──
         menu_mode = bar.addMenu("Chế độ tải")
 
-        act_links = QAction("🔗  Tải theo danh sách liên kết", self)
+        act_links = QAction("1. 🔗  Tải theo danh sách liên kết", self)
         act_links.setShortcut(QKeySequence("Ctrl+1"))
         act_links.triggered.connect(lambda: self._switch_page(self.PAGE_LINKS))
         menu_mode.addAction(act_links)
 
-        act_channel = QAction("📡  Quét & Tải theo Kênh / Hồ sơ", self)
+        act_channel = QAction("2. 📡  Quét & Tải theo Kênh / Hồ sơ", self)
         act_channel.setShortcut(QKeySequence("Ctrl+2"))
         act_channel.triggered.connect(lambda: self._switch_page(self.PAGE_CHANNEL))
         menu_mode.addAction(act_channel)
+
+        act_studio = QAction("3. 🎬  Studio Lồng tiếng & Soát kịch bản", self)
+        act_studio.setShortcut(QKeySequence("Ctrl+3"))
+        act_studio.triggered.connect(lambda: self._switch_page(self.PAGE_STUDIO))
+        menu_mode.addAction(act_studio)
 
         menu_mode.addSeparator()
 
@@ -549,9 +742,17 @@ class MainWindow(QMainWindow):
 
         # ── Cột trái: QStackedWidget ──
         self._stack = QStackedWidget()
+        self.stacked_widget = self._stack  # Alias thuận tiện
+        self.studio_widget = DubbingStudioWidget(parent=self)
+
         self._stack.addWidget(self._build_page_links())    # 0
         self._stack.addWidget(self._build_page_channel())  # 1
+        self._stack.addWidget(self.studio_widget)          # 2
         self._stack.setCurrentIndex(self.PAGE_LINKS)
+
+        # Kết nối sự kiện từ Studio
+        self.studio_widget.back_requested.connect(lambda: self.stacked_widget.setCurrentIndex(self.PAGE_LINKS))
+        self.studio_widget.export_dubbing_requested.connect(self._on_studio_export_dubbing)
 
         # ── Cột phải: Tiến trình & Log ──
         right = self._build_right_panel()
@@ -1093,6 +1294,10 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self._btn_start)
         cl.addLayout(btn_row)
 
+        # Aliases chuẩn cho các nút điều khiển chính
+        self.btn_start = self._btn_start
+        self.btn_stop = self._btn_stop
+
         layout.addWidget(card, 1)
         return panel
 
@@ -1168,10 +1373,12 @@ class MainWindow(QMainWindow):
         self._btn_export_csv.clicked.connect(self._on_export_csv)
         self._result_table.itemChanged.connect(self._on_table_item_changed)
 
-        # Main buttons
-        self._btn_start.clicked.connect(self._on_start_download)
-        self._btn_stop.clicked.connect(self._on_stop_download)
+        # Main buttons & dynamic action switching
+        self.btn_start.clicked.connect(self.on_btn_start_clicked)
+        self.btn_stop.clicked.connect(self.on_btn_stop_clicked)
         self._btn_export_errors.clicked.connect(self._on_export_errors)
+        self.stacked_widget.currentChanged.connect(self.update_action_buttons_state)
+        self.update_action_buttons_state(self.stacked_widget.currentIndex())
 
     # ══════════════════════════════════════════════════════════════════
     # XỬ LÝ SỰ KIỆN — MENU TỆP
@@ -1187,6 +1394,7 @@ class MainWindow(QMainWindow):
                 os.makedirs(d, exist_ok=True)
             except OSError:
                 pass
+            self._save_settings()
             self._refresh_statusbar()
             self._append_log("HỆ THỐNG", f"Thư mục lưu đã đổi sang: {d}")
 
@@ -1197,6 +1405,7 @@ class MainWindow(QMainWindow):
         )
         if f:
             self.cookies_path = f
+            self._save_settings()
             self._update_cookie_ui()
             self._append_log("HỆ THỐNG", f"Đã nạp cookie: {os.path.basename(f)}")
             QMessageBox.information(
@@ -1208,6 +1417,7 @@ class MainWindow(QMainWindow):
 
     def _on_clear_cookie(self) -> None:
         self.cookies_path = ""
+        self._save_settings()
         self._update_cookie_ui()
         self._append_log("HỆ THỐNG", "Đã gỡ bỏ file cookie.")
 
@@ -1215,6 +1425,7 @@ class MainWindow(QMainWindow):
         dlg = CookieGuideDialog(parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_cookie_file:
             self.cookies_path = dlg.selected_cookie_file
+            self._save_settings()
             self._update_cookie_ui()
             self._append_log("HỆ THỐNG", f"Đã nạp cookie: {os.path.basename(self.cookies_path)}")
             QMessageBox.information(
@@ -1250,6 +1461,7 @@ class MainWindow(QMainWindow):
             voice=self.dub_voice,
             bg_volume=self.bg_volume,
             whisper_model=self.whisper_model,
+            gemini_api_key=self.gemini_api_key,
             parent=self,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -1258,20 +1470,29 @@ class MainWindow(QMainWindow):
             self.dub_voice = dlg.result_voice
             self.bg_volume = dlg.result_bg_volume
             self.whisper_model = dlg.result_whisper_model
+            self.gemini_api_key = dlg.result_gemini_api_key
+            self._save_settings()
             self._refresh_statusbar()
             status = "BẬT" if self.auto_dub else "TẮT"
-            self._append_log("LỒNG TIẾNG", f"Cài đặt đã lưu — Tự động lồng tiếng: {status}")
+            api_info = "Gemini API: Đã có key" if self.gemini_api_key else "Gemini API: Chưa có key"
+            self._append_log("LỒNG TIẾNG", f"Cài đặt đã lưu — Tự động lồng tiếng: {status} | {api_info}")
 
     def _on_dub_manual(self) -> None:
-        if self._is_dubbing:
-            QMessageBox.warning(self, "Đang xử lý", "Hiện đang có tiến trình lồng tiếng đang chạy!")
-            return
         f, _ = QFileDialog.getOpenFileName(
-            self, "Chọn video MP4 để lồng tiếng", "",
+            self, "Chọn video MP4 để lồng tiếng & soát kịch bản", "",
             "Video MP4 (*.mp4);;Tất cả file (*.*)"
         )
         if f:
-            self._start_dubbing(f)
+            self.studio_widget.load_video(f)
+            self.stacked_widget.setCurrentIndex(self.PAGE_STUDIO)
+            self._append_log("STUDIO", f"Đã nạp video vào Studio: {os.path.basename(f)}")
+
+    def _on_studio_export_dubbing(self, video_path: str, custom_segments: list) -> None:
+        """Xuất video lồng tiếng từ Studio với các câu thoại đã soát."""
+        if self._is_dubbing:
+            QMessageBox.warning(self, "Đang xử lý", "Hiện đang có tiến trình lồng tiếng đang chạy!")
+            return
+        self._start_dubbing(video_path, custom_segments=custom_segments)
 
     def _on_update_tools(self) -> None:
         reply = QMessageBox.question(
@@ -1302,6 +1523,7 @@ class MainWindow(QMainWindow):
         )
         if ok:
             self.max_workers = val
+            self._save_settings()
             self._append_log("HỆ THỐNG", f"Số luồng tải đồng thời đã đổi thành: {val}")
 
     # ══════════════════════════════════════════════════════════════════
@@ -1675,8 +1897,8 @@ class MainWindow(QMainWindow):
     # XỬ LÝ SỰ KIỆN — TẢI VIDEO (Chung)
     # ══════════════════════════════════════════════════════════════════
 
-    def _on_start_download(self) -> None:
-        # ── Kiểm tra bản quyền / lượt dùng thử trước khi tải ──
+    def _check_license_before_download(self) -> bool:
+        """Kiểm tra bản quyền / lượt dùng thử trước khi tải."""
         is_licensed, _, _, trial_remaining = \
             self._license_manager.get_status(use_cache=False)
         if not is_licensed and trial_remaining <= 0:
@@ -1687,35 +1909,105 @@ class MainWindow(QMainWindow):
                 "Vui lòng kích hoạt bản quyền PRO để tiếp tục tải không giới hạn."
             )
             self._on_open_activation_dialog()
+            return False
+        return True
+
+    def start_download(self) -> None:
+        """Trang 0: Bắt đầu tải theo danh sách link dán trong ô nhập liệu."""
+        if not self._check_license_before_download():
             return
 
-        if self._stack.currentIndex() == self.PAGE_LINKS:
-            urls = extract_urls(self._url_input.toPlainText())
-            if not urls:
-                QMessageBox.warning(
-                    self, "Cảnh báo",
-                    "Không tìm thấy liên kết hợp lệ!\n\n"
-                    "Hãy dán ít nhất một liên kết TikTok, Douyin, Facebook hoặc YouTube."
-                )
-                return
-        else:
-            urls = []
-            for r in range(self._result_table.rowCount()):
-                chk = self._result_table.item(r, 0)
-                url_item = self._result_table.item(r, 6)
-                if chk and url_item and chk.checkState() == Qt.CheckState.Checked:
-                    u = url_item.text().strip()
-                    if u:
-                        urls.append(u)
-            if not urls:
-                QMessageBox.warning(
-                    self, "Cảnh báo",
-                    "Chưa chọn video nào trong danh sách!\n"
-                    "Hãy tích checkbox ít nhất một video."
-                )
-                return
+        urls = extract_urls(self._url_input.toPlainText())
+        if not urls:
+            QMessageBox.warning(
+                self, "Cảnh báo",
+                "Không tìm thấy liên kết hợp lệ!\n\n"
+                "Hãy dán ít nhất một liên kết TikTok, Douyin, Facebook hoặc YouTube."
+            )
+            return
 
         self._start_download_with_urls(urls)
+
+    def start_channel_selected_download(self) -> None:
+        """Trang 1: Bắt đầu tải các video đã tick chọn trong bảng Quét kênh."""
+        if not self._check_license_before_download():
+            return
+
+        urls = []
+        for r in range(self._result_table.rowCount()):
+            chk = self._result_table.item(r, 0)
+            url_item = self._result_table.item(r, 6)
+            if chk and url_item and chk.checkState() == Qt.CheckState.Checked:
+                u = url_item.text().strip()
+                if u:
+                    urls.append(u)
+        if not urls:
+            QMessageBox.warning(
+                self, "Cảnh báo",
+                "Chưa chọn video nào trong danh sách!\n"
+                "Hãy tích checkbox ít nhất một video."
+            )
+            return
+
+        self._start_download_with_urls(urls)
+
+    def stop_download(self) -> None:
+        """Dừng quá trình tải video đang chạy."""
+        self._on_stop_download()
+
+    def stop_dubbing(self) -> None:
+        """Dừng tác vụ lồng tiếng AI nếu đang chạy."""
+        if self._is_dubbing and self._dub_worker:
+            reply = QMessageBox.question(
+                self, "Xác nhận dừng lồng tiếng",
+                "Bạn có chắc muốn dừng tiến trình lồng tiếng AI đang chạy không?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+            self.btn_stop.setEnabled(False)
+            self.btn_stop.setText("⏳ Đang dừng...")
+            try:
+                self._dub_worker.terminate()
+                self._dub_worker.wait(1000)
+            except Exception:
+                pass
+            self._is_dubbing = False
+            self._dub_worker = None
+            self.dubbing_worker = None
+            self._append_log("LỒNG TIẾNG", "Đã dừng tiến trình lồng tiếng.")
+            self._status_bar.showMessage("Đã dừng lồng tiếng")
+            self._update_button_states()
+
+    def on_btn_start_clicked(self) -> None:
+        """Thực thi hành động tương ứng với trang đang hiển thị."""
+        current_index = self.stacked_widget.currentIndex()
+
+        if current_index == 0:
+            # Đang ở trang Tải link lẻ
+            self.start_download()
+        elif current_index == 1:
+            # Đang ở trang Quét kênh -> Tải các video được tick chọn trong bảng
+            self.start_channel_selected_download()
+        elif current_index == 2:
+            # Đang ở Studio Lồng tiếng -> Bắt đầu bóc tách, dịch và lồng tiếng video
+            if hasattr(self, 'studio_widget'):
+                self.studio_widget.start_dubbing_process()
+
+    def on_btn_stop_clicked(self) -> None:
+        """Dừng tác vụ tương ứng với trang đang hiển thị."""
+        current_index = self.stacked_widget.currentIndex()
+
+        if current_index == 2 and hasattr(self, 'studio_widget'):
+            self.studio_widget.stop_dubbing_process()
+        else:
+            self.stop_download()
+
+    def _on_start_download(self) -> None:
+        """Alias tương thích ngược."""
+        self.on_btn_start_clicked()
 
     def _start_download_with_urls(self, urls: List[str]) -> None:
         if self._is_downloading:
@@ -1742,6 +2034,11 @@ class MainWindow(QMainWindow):
             output_dir=self.output_dir,
             cookie_file=self.cookies_path,
             max_workers=self.max_workers,
+            auto_dub=self.auto_dub,
+            dub_lang=self.dub_lang,
+            dub_voice=self.dub_voice,
+            whisper_model=self.whisper_model,
+            gemini_api_key=self.gemini_api_key,
             parent=self,
         )
         self._worker.status_updated.connect(self._on_status_updated)
@@ -1810,16 +2107,51 @@ class MainWindow(QMainWindow):
             voice=self.dub_voice,
             bg_volume=self.bg_volume / 100.0,
             whisper_model=self.whisper_model,
+            gemini_api_key=self.gemini_api_key,
         )
 
-    def _start_dubbing(self, video_path: str) -> None:
+    def _start_dubbing(self, video_path: str, custom_segments: Optional[List[DubSegment]] = None) -> None:
         if self._is_dubbing:
             self._append_log("LỒNG TIẾNG", f"Bỏ qua {Path(video_path).name} — đang bận lồng tiếng.")
             return
+
+        if not custom_segments and not self.gemini_api_key.strip():
+            reply = QMessageBox.question(
+                self,
+                "Cần cấu hình Gemini API Key",
+                "Module Lồng tiếng AI điện ảnh sử dụng Gemini Flash API (Miễn phí 0đ từ Google AI Studio) để dịch thoại chuẩn ngữ cảnh và đúng tên họ Hán-Việt.\n\n"
+                "Bạn có muốn mở Cài đặt để nhập API Key ngay bây giờ không?\n(Chỉ mất 30 giây để lấy key miễn phí)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._on_open_dub_dialog()
+                if not self.gemini_api_key.strip():
+                    self._append_log("LỒNG TIẾNG", "Chưa nhập Gemini API Key. Đã hủy tiến trình lồng tiếng.")
+                    return
+            else:
+                self._append_log("LỒNG TIẾNG", "Chưa cấu hình Gemini API Key. Đã hủy tiến trình lồng tiếng.")
+                return
+
         config = self._get_dub_config()
+        config.custom_segments = custom_segments
         self._dub_worker = DubWorker(
             input_video=video_path, config=config, parent=self
         )
+        self.dubbing_worker = self._dub_worker
+
+        # Nạp video vào Studio và kết nối các tín hiệu thời gian thực lên bảng
+        if hasattr(self, 'studio_widget'):
+            self.studio_widget.load_video_to_studio(video_path)
+            self.dubbing_worker.sig_segment_discovered.connect(self.studio_widget.on_segment_discovered)
+            self.dubbing_worker.sig_segments_loaded.connect(self.studio_widget.on_segments_loaded)
+            self.dubbing_worker.sig_sentence_translated.connect(self.studio_widget.on_sentence_translated)
+            self.dubbing_worker.sig_sentence_completed.connect(self.studio_widget.on_sentence_completed)
+            if hasattr(self.studio_widget, 'on_all_finished'):
+                self.dubbing_worker.sig_all_finished.connect(self.studio_widget.on_all_finished)
+            if hasattr(self.studio_widget, 'update_progress_status'):
+                self.dubbing_worker.log_message.connect(self.studio_widget.update_progress_status)
+
         self._dub_worker.log_message.connect(lambda m: self._append_log("LỒNG TIẾNG", m))
         self._dub_worker.dub_progress.connect(self._on_dub_progress)
         self._dub_worker.dub_finished.connect(self._on_dub_finished)
@@ -1828,6 +2160,7 @@ class MainWindow(QMainWindow):
         self._is_dubbing = True
         self._append_log("LỒNG TIẾNG", f"Bắt đầu lồng tiếng: {Path(video_path).name}")
         self._status_bar.showMessage(f"Lồng tiếng AI: {Path(video_path).name}")
+        self._update_button_states()
         self._dub_worker.start()
 
     def _on_dub_progress(self, current: int, total: int) -> None:
@@ -1848,7 +2181,9 @@ class MainWindow(QMainWindow):
     def _on_dub_worker_done(self) -> None:
         self._is_dubbing = False
         self._dub_worker = None
+        self.dubbing_worker = None
         self._status_bar.showMessage("Trạng thái: Sẵn sàng")
+        self._update_button_states()
 
     # ══════════════════════════════════════════════════════════════════
     # CALLBACKS DOWNLOAD WORKER
@@ -1873,6 +2208,10 @@ class MainWindow(QMainWindow):
     def _on_item_finished(self, url: str, success: bool, error: str) -> None:
         if success:
             self._success_count += 1
+            file_path = error
+            if hasattr(self, 'studio_widget') and file_path and os.path.isfile(file_path) and file_path.lower().endswith(".mp4"):
+                if not getattr(self.studio_widget, 'current_video_path', None):
+                    self.studio_widget.load_video_to_studio(file_path)
 
             # ── Trừ lượt dùng thử (nếu đang ở chế độ Trial) ──
             is_licensed, _, _, _ = self._license_manager.get_status(use_cache=True)
@@ -1889,23 +2228,6 @@ class MainWindow(QMainWindow):
                         "⚠ Đã hết lượt dùng thử. Vui lòng kích hoạt bản quyền PRO."
                     )
 
-            # Tự động lồng tiếng nếu bật
-            if self.auto_dub and not self._is_dubbing:
-                try:
-                    mp4s = sorted(
-                        Path(self.output_dir).glob("*.mp4"),
-                        key=os.path.getmtime, reverse=True
-                    )
-                    for f in mp4s:
-                        if not f.name.endswith("_dubbed.mp4"):
-                            self._append_log(
-                                "LỒNG TIẾNG",
-                                f"Phát hiện video mới: {f.name} → Lồng tiếng tự động..."
-                            )
-                            self._start_dubbing(str(f))
-                            break
-                except Exception as ex:
-                    self._append_log("LỒNG TIẾNG", f"Không kích hoạt được tự động: {ex}")
         else:
             self._fail_count += 1
             self._failed_urls.append(url)
@@ -1964,10 +2286,34 @@ class MainWindow(QMainWindow):
         dub_disp = "BẬT" if self.auto_dub else "TẮT"
         self._sb_label.setText(f"📁 {dir_disp}  |  🎙 Lồng tiếng: {dub_disp}")
 
+    def update_action_buttons_state(self, index: Optional[int] = None) -> None:
+        """Tự động đổi nhãn và trạng thái nút bấm theo màn hình đang mở."""
+        if index is None or not isinstance(index, int):
+            index = self.stacked_widget.currentIndex()
+
+        if index == 0:
+            # Trang 0: Tải theo danh sách link lẻ
+            self.btn_start.setText("▶ BẮT ĐẦU TẢI")
+            self.btn_stop.setText("⏹ Dừng tải")
+        elif index == 1:
+            # Trang 1: Quét Kênh / Hồ sơ
+            self.btn_start.setText("🚀 TẢI VIDEO ĐÃ CHỌN")
+            self.btn_stop.setText("⏹ Dừng tải")
+        elif index == 2:
+            # Trang 2: Studio Lồng tiếng & Soát kịch bản
+            self.btn_start.setText("🎙️ BẮT ĐẦU LỒNG TIẾNG")
+            self.btn_stop.setText("⏹ Dừng lồng tiếng")
+
+        is_busy = bool(self._is_downloading or self._is_dubbing)
+        if is_busy and self.btn_stop.text().startswith("⏳"):
+            self.btn_start.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+        else:
+            self.btn_start.setEnabled(not is_busy)
+            self.btn_stop.setEnabled(is_busy)
+
     def _update_button_states(self) -> None:
-        self._btn_start.setEnabled(not self._is_downloading)
-        self._btn_stop.setEnabled(self._is_downloading)
-        self._btn_stop.setText("⏹  Dừng tải")
+        self.update_action_buttons_state(self.stacked_widget.currentIndex())
 
     def _update_badges(self) -> None:
         self._badge_total.setText(f"  Tổng: {self._total_urls} video  ")
@@ -1976,8 +2322,17 @@ class MainWindow(QMainWindow):
         self._badge_error.setText(f"  Lỗi: {self._fail_count}  ")
 
     def _append_log(self, tag: str, message: str) -> None:
+        msg = str(message).strip()
+        # Nếu message đã bị kèm timestamp ở đầu định dạng [HH:MM:SS], bóc tách ra để tránh bị hiển thị 2 lần
+        if len(msg) >= 10 and msg.startswith("[") and msg[9] == "]":
+            parts = msg[1:9].split(":")
+            if len(parts) == 3 and all(p.isdigit() for p in parts):
+                ts = msg[:10]
+                msg = msg[10:].strip()
+                self._append_log_raw(ts, tag, msg)
+                return
         ts = datetime.now().strftime("[%H:%M:%S]")
-        self._append_log_raw(ts, tag, message)
+        self._append_log_raw(ts, tag, msg)
 
     def _append_log_raw(self, timestamp: str, tag: str, message: str) -> None:
         tag_color = PLATFORM_COLORS.get(tag, COLORS["text_muted"])
@@ -2005,7 +2360,7 @@ class MainWindow(QMainWindow):
             return "FACEBOOK"
         if "youtube" in m or "youtu.be" in m:
             return "YOUTUBE"
-        if "lồng tiếng" in m or "whisper" in m or "edge-tts" in m:
+        if "lồng tiếng" in m or "whisper" in m or "gtts" in m:
             return "LỒNG TIẾNG"
         return "HỆ THỐNG"
 
@@ -2097,4 +2452,5 @@ class MainWindow(QMainWindow):
             self._dub_worker.terminate()
             self._dub_worker.wait(1000)
 
+        self._save_settings()
         event.accept()

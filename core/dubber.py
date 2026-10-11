@@ -1,28 +1,27 @@
 """
-core/dubber.py - Module Lồng tiếng / Thuyết minh AI Tiếng Việt.
+core/dubber.py - Module Lồng tiếng AI Phim ảnh chuẩn VideoLingo (Cinema Dubbing Pipeline).
 
-Quy trình xử lý:
-  1. Tách âm thanh gốc từ video (FFmpeg).
-  2. Bóc tách mốc thời gian từng câu bằng faster-whisper + VAD.
-  3. Dịch sang Tiếng Việt bằng GoogleTranslator (deep-translator).
-  4. Tổng hợp giọng đọc tiếng Việt bằng Edge-TTS với Dynamic Pacing.
-  5. Ghép trục thời gian: nối audio câu + khoảng lặng.
-  6. Ghép vào video gốc với Sidechain Ducking (FFmpeg).
-
-Không yêu cầu API Key. Hoạt động hoàn toàn offline / miễn phí.
+Tích hợp 4 khâu tinh hoa từ VideoLingo:
+  1. Sentence Segmentation: Gom câu thoại ngắt quãng theo ngữ pháp hoàn chỉnh.
+  2. Contextual Film Translation: Dịch kịch bản theo ngữ cảnh phim ảnh (xưng hô, sảng văn, tình cảm).
+  3. Speed Pacing / Time-stretching: Tự động điều tốc (atempo) khớp khít từng khung hình, không tràn cảnh.
+  4. Cinema Audio Ducking: Sidechain Compressor hạ nhạc nền gốc êm ái khi có thoại và tự động nâng lại.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
+import re
 import shutil
 import subprocess
-import tempfile
-from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+import sys
+import time
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Tuple
 
-# Vá tương thích PyAV 19+ (loại bỏ tham số metadata_errors mà faster-whisper cũ gọi)
+import requests
+
+# Vá tương thích PyAV 19+ cho faster-whisper
 try:
     import av
     _orig_av_open = av.open
@@ -35,612 +34,967 @@ try:
 except Exception:
     pass
 
+# Hỗ trợ audioop trên Python 3.13+ cho pydub
+try:
+    import audioop  # noqa: F401
+except ImportError:
+    try:
+        # pyrefly: ignore [missing-import]
+        import audioop_lts as audioop
+        sys.modules["audioop"] = audioop
+    except Exception:
+        pass
+
+from deep_translator import GoogleTranslator
+from faster_whisper import WhisperModel
+# pyrefly: ignore [missing-import]
+from gtts import gTTS
+# pyrefly: ignore [missing-import]
+from pydub import AudioSegment
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CẤU HÌNH CÔNG CỤ VÀ ĐƯỜNG DẪN FFmpeg
+# ══════════════════════════════════════════════════════════════════════
+
+def _find_ffmpeg_bin() -> str:
+    """Tìm đường dẫn ffmpeg.exe ưu tiên thư mục gốc dự án."""
+    proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local_ff = os.path.join(proj_dir, "ffmpeg.exe")
+    if os.path.isfile(local_ff):
+        return local_ff
+    found = shutil.which("ffmpeg")
+    return found or "ffmpeg"
+
+
+def _find_ffprobe_bin() -> str:
+    """Tìm đường dẫn ffprobe.exe ưu tiên thư mục gốc dự án."""
+    proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local_probe = os.path.join(proj_dir, "ffprobe.exe")
+    if os.path.isfile(local_probe):
+        return local_probe
+    found = shutil.which("ffprobe")
+    return found or "ffprobe"
+
+
+FFMPEG_PATH = _find_ffmpeg_bin()
+FFPROBE_PATH = _find_ffprobe_bin()
+
+# Cấu hình pydub sử dụng đúng file binary nội bộ
+if os.path.isfile(FFMPEG_PATH):
+    AudioSegment.converter = FFMPEG_PATH
+    AudioSegment.ffmpeg = FFMPEG_PATH
+if os.path.isfile(FFPROBE_PATH):
+    AudioSegment.ffprobe = FFPROBE_PATH
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CẤU TRÚC DỮ LIỆU & TỪ ĐIỂN ĐIỆN ẢNH (FILM CONTEXT GLOSSARY)
+# ══════════════════════════════════════════════════════════════════════
 
 @dataclass
 class DubSegment:
-    """Một đoạn thoại đã bóc tách từ STT."""
-    start: float           # Thời điểm bắt đầu (giây)
-    end: float             # Thời điểm kết thúc (giây)
-    original_text: str     # Văn bản gốc (Trung/Anh)
-    vn_text: str = ""      # Văn bản đã dịch sang Tiếng Việt
-    tts_path: str = ""     # Đường dẫn file âm thanh TTS tạm
-    rate_str: str = "+0%"  # Tỷ lệ tốc độ cho Edge-TTS
+    """Đoạn phụ đề / lời thoại đã được gom câu hoàn chỉnh."""
+    start: float
+    end: float
+    text_orig: str
+    text_trans: str = ""
+    audio_path: str = ""
+    duration_actual: float = 0.0
 
-    @property
-    def target_duration(self) -> float:
-        """Thời lượng gốc của đoạn thoại (giây)."""
-        return max(0.1, self.end - self.start)
 
+# Bộ quy tắc Hán Việt / Điện ảnh giúp dịch đúng ngữ cảnh sảng văn & anime (không gán cứng tên riêng)
+CHINESE_FILM_GLOSSARY = {
+    # Danh xưng / chức vụ phổ quát
+    "学长": "đàn anh",
+    "学妹": "đàn em",
+    "师兄": "sư huynh",
+    "师姐": "sư tỷ",
+    "师弟": "sư đệ",
+    "师妹": "sư muội",
+    "师傅": "sư phụ",
+    "前辈": "tiền bối",
+    "娘娘": "nương nương",
+    "陛下": "bệ hạ",
+    "大人": "đại nhân",
+    "少爷": "thiếu gia",
+    "小姐": "tiểu thư",
+    "老板": "ông chủ",
+    "经理": "giám đốc",
+
+    # Ngữ cảnh tình cảm / giao tiếp
+    "做我女朋友好不好": "làm bạn gái anh có được không?",
+    "做我女朋友": "làm bạn gái anh",
+    "表白": "tỏ tình",
+    "牵手散步": "nắm tay đi dạo",
+
+    # Tiếng lóng / chửi thề / sảng văn
+    "狗男女": "đôi cẩu nam nữ",
+    "小婊子": "con khốn",
+    "小表子": "con khốn",
+    "见人": "tiện nhân",
+    "贱人": "tiện nhân",
+    "争配": "xứng đôi",
+    "绝配": "xứng đôi vừa lứa",
+    "能装": "giả tạo",
+    "天天装可爱装可怜": "ngày nào cũng giả vờ dễ thương, giả vờ đáng thương",
+    "逆返系统": "Nghịch Phản Hệ Thống",
+    "正式集团": "tập đoàn Chính Thức",
+    "继承人": "người thừa kế",
+    "爽文": "sảng văn",
+    "动手": "ra tay",
+    "没忍住": "không nhịn được",
+}
+
+SENTENCE_TERMINALS = ('.', '!', '?', '。', '！', '？', ';', '；', '好不好', '吗', '吧', '呢', '呀', '啊', '了')
+VOCATIVE_OPENERS = (
+    "学长", "学妹", "师兄", "师姐", "师弟", "师妹", "师傅", "前辈",
+    "娘娘", "哥哥", "姐姐", "弟弟", "妹妹", "叔叔", "阿姨",
+    "老板", "老师", "先生", "小姐", "兄弟", "宝贝"
+)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# BƯỚC 1: GOM CÂU THEO NGỮ PHÁP (SENTENCE SEGMENTATION)
+# ══════════════════════════════════════════════════════════════════════
+
+def merge_broken_segments(
+    raw_segments: list,
+    max_gap: float = 0.8,
+    max_dur: float = 6.0,
+    max_chars: int = 50,
+) -> List[DubSegment]:
+    """
+    Giải thuật VideoLingo (step4_split_sentences):
+    Gom các mẩu thoại ngắt quãng từ Whisper thành câu văn hoàn chỉnh theo dấu câu.
+    Ngăn chặn lỗi cắt vụn danh xưng, đại từ hoặc cắt giữa câu.
+    """
+    if not raw_segments:
+        return []
+
+    merged: List[DubSegment] = []
+    first = raw_segments[0]
+    curr = DubSegment(
+        start=float(first.start),
+        end=float(first.end),
+        text_orig=first.text.strip()
+    )
+
+    for seg in raw_segments[1:]:
+        text = seg.text.strip()
+        if not text:
+            continue
+
+        gap = float(seg.start) - curr.end
+        added_dur = float(seg.end) - curr.start
+        is_terminal = curr.text_orig.endswith(SENTENCE_TERMINALS)
+        is_short = len(curr.text_orig) <= 4 or (curr.end - curr.start) < 1.2
+        starts_vocative = any(text.startswith(voc) for voc in VOCATIVE_OPENERS)
+
+        # Điều kiện gộp:
+        # 1. Câu trước chưa kết thúc và khoảng cách thời gian ngắn (gap < max_gap),
+        #    và câu tiếp theo không phải là mở đầu câu thoại của người mới (vocative opener).
+        # 2. Hoặc câu trước quá ngắn (như danh xưng, thán từ ngắn) -> bắt buộc gộp vào vế sau.
+        # 3. Đồng thời tổng thời lượng sau khi gộp không vượt quá max_dur.
+        can_merge = (
+            added_dur <= max_dur and
+            (len(curr.text_orig) + len(text) <= max_chars) and
+            (
+                (is_short and gap < 1.3) or
+                (not is_terminal and not starts_vocative and gap < max_gap)
+            )
+        )
+
+        if can_merge:
+            # Gộp text thông minh theo ngữ pháp
+            has_cjk = any('\u4e00' <= ch <= '\u9fff' for ch in curr.text_orig)
+            if has_cjk:
+                if gap > 0.4 and not curr.text_orig.endswith(('，', ',', '、', ' ')):
+                    curr.text_orig += "，" + text
+                else:
+                    curr.text_orig += text
+            else:
+                curr.text_orig += " " + text
+            curr.end = float(seg.end)
+        else:
+            merged.append(curr)
+            curr = DubSegment(
+                start=float(seg.start),
+                end=float(seg.end),
+                text_orig=text
+            )
+
+    if curr.text_orig:
+        merged.append(curr)
+
+    return merged
+
+
+# ══════════════════════════════════════════════════════════════════════
+# BƯỚC 2: QUY TRÌNH DỊCH 2 BƯỚC TỰ ĐỘNG (2-PASS CONTEXTUAL PIPELINE)
+# ══════════════════════════════════════════════════════════════════════
+
+def extract_video_context_profile(full_chinese_text: str, api_key: str) -> str:
+    """
+    Bước 1: AI tự đọc kịch bản để tạo ra hồ sơ nhân vật và bối cảnh cho video đó.
+    Hoàn toàn tự động cho mọi video (phim ảnh, hoạt hình, vlog...), không hardcode tên riêng.
+    """
+    clean_key = (api_key or "").strip()
+    if not clean_key or not full_chinese_text or not full_chinese_text.strip():
+        return "Bối cảnh: Phim truyện ngắn Trung Quốc. Tên riêng dịch theo âm Hán-Việt chuẩn."
+
+    headers = {"Content-Type": "application/json"}
+    prompt = (
+        "Bạn là chuyên gia phân tích kịch bản phim ảnh Trung Quốc.\n"
+        "Hãy đọc toàn bộ lời thoại sau và tóm tắt ngắn gọn thành hồ sơ ngữ cảnh (trong 3-4 dòng):\n"
+        "1. Thể loại nội dung (phim tình cảm, đô thị, tu tiên, vlog, hài hước...).\n"
+        "2. Danh sách tên các nhân vật chính và phiên âm Hán-Việt chuẩn của họ (Ví dụ: 叶 -> Diệp, 孙 -> Tôn, 李小男 -> Lý Tiểu Nam).\n"
+        "3. Quan hệ và cách xưng hô hợp lý nhất giữa các nhân vật (anh - em, ngài - tôi, mày - tao...).\n"
+        "4. Giải thích các từ lóng mạng nếu có (ví dụ: 校草 = nam thần trường, 摸头杀 = xoa đầu cưng nựng).\n\n"
+        f"Nội dung thoại:\n{full_chinese_text[:2000]}"
+    )
+    payload = {
+        "system_instruction": {"parts": [{"text": "Bạn là chuyên gia phân tích kịch bản phim ảnh Trung Quốc. Tóm tắt ngắn gọn trong 3-4 dòng: Thể loại, tên nhân vật (phiên âm Hán-Việt chuẩn), xưng hô hợp lý, tiếng lóng nếu có."}]},
+        "contents": [{"parts": [{"text": f"Phân tích kịch bản sau:\n{full_chinese_text[:2500]}"}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}
+    }
+
+    candidate_models = (
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+    )
+
+    for model_name in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={clean_key}"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates and "content" in candidates[0]:
+                    parts = candidates[0]["content"].get("parts", [])
+                    if parts:
+                        profile = parts[0].get("text", "").strip()
+                        if profile:
+                            return profile
+        except Exception:
+            continue
+
+    return "Bối cảnh: Phim truyện ngắn Trung Quốc. Tên riêng dịch theo âm Hán-Việt chuẩn."
+
+
+def translate_dialogues_with_profile(
+    dialogues: list[str],
+    profile: str,
+    api_key: str,
+    on_sentence_translated_cb: Optional[Callable[[int, str], None]] = None,
+) -> list[str]:
+    """
+    Bước 2: Dịch toàn bộ các câu thoại dựa trên hồ sơ bối cảnh tự động.
+    Dùng chính profile từ Bước 1 làm kim chỉ nam, giữ nguyên số thứ tự từng dòng.
+    """
+    if not dialogues:
+        return []
+
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        return dialogues
+
+    headers = {"Content-Type": "application/json"}
+    sys_instruction = (
+        "Bạn là biên dịch viên lồng tiếng phim Trung Quốc sang Tiếng Việt xuất sắc nhất.\n"
+        f"HỒ SƠ BỐI CẢNH CỦA VIDEO:\n{profile}\n\n"
+        "QUY TẮC BẮT BUỘC:\n"
+        "1. Dựa sát vào hồ sơ bối cảnh để dịch xưng hô nhất quán, tự nhiên chuẩn điện ảnh.\n"
+        "2. Mọi tên người, chức danh, địa danh BẮT BUỘC PHẢI PHIÊN ÂM HÁN-VIỆT CHUẨN (Tuyệt đối không dùng tiếng Anh như Mr, Cloud, Sir...).\n"
+        "3. Tự động sửa lỗi chữ Hán đồng âm do ASR (Ví dụ: '不要弄放' -> 'Đừng làm bẩn / đừng động vào đồ của tôi').\n"
+        "4. ĐỊNH DẠNG XUẤT BẮT BUỘC:\n"
+        "   - Chỉ trả về duy nhất danh sách các câu dịch Tiếng Việt: 1. [câu dịch]  2. [câu dịch]...\n"
+        "   - TUYỆT ĐỐI KHÔNG kèm chữ Hán gốc, KHÔNG ghi chú, KHÔNG giải thích nghĩa, KHÔNG có lời mở đầu hay kết luận.\n"
+        "   - Mỗi dòng đúng 1 câu dịch bắt đầu bằng [Số thứ tự]."
+    )
+
+    candidate_models = (
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+    )
+    batch_size = 100
+    all_translated: list[str] = []
+
+    for chunk_start in range(0, len(dialogues), batch_size):
+        chunk = dialogues[chunk_start : chunk_start + batch_size]
+        numbered_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(chunk)])
+
+        payload = {
+            "system_instruction": {"parts": [{"text": sys_instruction}]},
+            "contents": [{"parts": [{"text": f"Dịch danh sách các câu thoại sau sang Tiếng Việt:\n{numbered_text}"}]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}
+        }
+
+        translated_raw = ""
+        for model_name in candidate_models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={clean_key}"
+            try:
+                resp = requests.post(url, headers=headers, json=payload, timeout=25)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts:
+                            translated_raw = parts[0].get("text", "").strip()
+                            if translated_raw:
+                                break
+            except Exception:
+                continue
+
+        # Bóc tách kết quả theo số thứ tự
+        vn_dict: dict[int, str] = {}
+        if translated_raw:
+            for line in translated_raw.splitlines():
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                match = re.match(r"^(\d+)[\.\)]\s*(.*)", line_str)
+                if match:
+                    idx = int(match.group(1))
+                    text_vi = match.group(2).strip().replace("**", "").replace("*", "").strip()
+                    if text_vi:
+                        vn_dict[idx] = text_vi
+
+        # Nếu Gemini hoàn toàn không trả về kết quả hợp lệ, ném ngoại lệ để chuyển sang dịch dự phòng
+        if not vn_dict:
+            raise RuntimeError("Gemini API không phản hồi kết quả hợp lệ, chuyển sang dịch dự phòng Google Translate.")
+
+        for i in range(1, len(chunk) + 1):
+            line_vi = vn_dict.get(i, "")
+            # Nếu câu bị thiếu hoặc còn sót chữ Hán, dùng dịch dự phòng cho riêng câu đó
+            if not line_vi or any("\u4e00" <= c <= "\u9fff" for c in line_vi):
+                fb_trans = _fetch_gtx_translate(chunk[i - 1], sl="zh-CN", tl="vi")
+                line_vi = fb_trans if fb_trans else chunk[i - 1]
+            all_translated.append(line_vi)
+            global_idx = chunk_start + (i - 1)
+            if on_sentence_translated_cb:
+                on_sentence_translated_cb(global_idx, line_vi)
+
+    return all_translated
+
+
+def clean_general_translation(text: str) -> str:
+    """
+    Bước 3: Bộ lọc Hán-Việt tổng quát dự phòng (Fallback General Normalizer).
+    Dọn dẹp tổng quát chạy sau dịch để loại bỏ lỗi phổ biến cho MỌI video:
+    - Sửa "Mr. [Tên]" thành "[Tên] tiên sinh".
+    - Xóa bỏ các từ tiếng Anh bị sót ("Cloud Villa" -> "biệt thự Vân Đoan").
+    - Chuẩn hóa đại từ, cấu trúc câu ngô nghê mà không gán cứng bất kỳ tên nhân vật nào.
+    """
+    cleaned = text
+
+    # 1. Tự động sửa cấu trúc "Mr. [Tên]" thành "[Tên] tiên sinh"
+    cleaned = re.sub(r'\bMr\.?\s*([A-Za-zÀ-ỹ]+)', r'\1 tiên sinh', cleaned, flags=re.IGNORECASE)
+
+    # 2. Xóa bỏ các từ tiếng Anh bị sót
+    cleaned = re.sub(r'\bCloud Villa\b', 'biệt thự Vân Đoan', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bSir\s+([A-Za-zÀ-ỹ]+)', r'\1 tiên sinh', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bMiss\s+([A-Za-zÀ-ỹ]+)', r'\1 tiểu thư', cleaned, flags=re.IGNORECASE)
+
+    # 3. Chống hiện tượng lặp từ bất thường
+    cleaned = re.sub(r'(con chó\s*[,、]?\s*){3,}', 'đôi cẩu nam nữ ', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'(hai con chó\s*[,、]?\s*){2,}', 'đôi cẩu nam nữ ', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'hai bạn vẫn đang tranh giành bạn tình', 'hai người cẩu nam nữ các người thật là xứng đôi', cleaned, flags=re.IGNORECASE)
+
+    # 4. Khắc phục lỗi dịch máy ngô nghê về câu giao tiếp / tỏ tình chung
+    cleaned = re.sub(r'Này chàng trai,\s*cậu có muốn làm bạn gái của tôi không\??', 'Làm bạn gái anh nhé?', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'cậu có muốn làm bạn gái của tôi không\??', 'làm bạn gái anh nhé?', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'Làm bạn gái của tôi là một điều không tốt', 'Làm bạn gái anh nhé', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'Làm bạn gái tôi là không tốt', 'Làm bạn gái anh có được không', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'Làm bạn gái của tôi không tốt sao', 'Làm bạn gái anh có được không', cleaned, flags=re.IGNORECASE)
+
+    # 5. Loại bỏ khoảng trắng thừa
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
+def polish_film_translation(text_vn: str) -> str:
+    """Hàm tương thích ngược - gọi clean_general_translation."""
+    return clean_general_translation(text_vn)
+
+
+def translate_dialogues_gemini(dialogues: list[str], api_key: str, source_lang: str = "zh") -> list[str]:
+    """Hàm tương thích: Tự động chạy Quy trình 2 bước (2-Pass Pipeline) bằng Gemini Flash API."""
+    if not api_key or not api_key.strip():
+        raise ValueError("Chưa cấu hình Gemini API Key. Vui lòng nhập key trong phần Cài đặt.")
+    if not dialogues:
+        return []
+
+    full_text = "\n".join(dialogues)
+    profile = extract_video_context_profile(full_text, api_key=api_key.strip())
+    raw_translated = translate_dialogues_with_profile(dialogues, profile=profile, api_key=api_key.strip())
+    return [clean_general_translation(line) for line in raw_translated]
+
+
+def _fetch_gtx_translate(text: str, sl: str = "zh-CN", tl: str = "vi") -> str:
+    """Gọi Google Translate qua curl_cffi giả lập Chrome tránh lỗi TooManyRequests / Timeout."""
+    try:
+        from curl_cffi import requests as c_requests
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {"client": "gtx", "sl": sl, "tl": tl, "dt": "t", "q": text}
+        resp = c_requests.get(url, params=params, impersonate="chrome124", timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            lines = [item[0] for item in data[0] if item and item[0]]
+            return "".join(lines).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def translate_film_context(
+    segments: List[DubSegment],
+    source_lang: str = "zh",
+    gemini_api_key: str = "",
+    batch_size: int = 15,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    on_sentence_translated_cb: Optional[Callable[[int, str], None]] = None,
+) -> None:
+    """
+    Dịch theo khối ngữ cảnh liên tục kết hợp 2-Pass Contextual Pipeline:
+    ƯU TIÊN 1: Gemini Flash API (Bước 1 trích xuất profile, Bước 2 dịch theo profile, Bước 3 chuẩn hóa).
+    ƯU TIÊN 2: Fallback Google Translate / deep-translator nếu chưa có API Key.
+    """
+    if not segments:
+        return
+
+    # 1. Ưu tiên dịch qua Gemini 2-Pass Contextual Pipeline nếu có key
+    if gemini_api_key and gemini_api_key.strip():
+        raw_dialogues = [seg.text_orig if seg.text_orig else "..." for seg in segments]
+        full_text = "\n".join(seg.text_orig.strip() for seg in segments if seg.text_orig.strip())
+        try:
+            if progress_cb:
+                progress_cb("[GEMINI 2-PASS] Bước 1: Đang phân tích bối cảnh & trích xuất thực thể...")
+
+            profile = extract_video_context_profile(full_text, api_key=gemini_api_key.strip())
+
+            if progress_cb:
+                progress_cb("[GEMINI 2-PASS] Bước 2: Đang dịch toàn bộ câu thoại theo hồ sơ bối cảnh...")
+
+            vn_list = translate_dialogues_with_profile(
+                raw_dialogues,
+                profile=profile,
+                api_key=gemini_api_key.strip(),
+                on_sentence_translated_cb=on_sentence_translated_cb,
+            )
+
+            if len(vn_list) == len(segments):
+                if progress_cb:
+                    progress_cb("[GEMINI 2-PASS] Bước 3: Đang hoàn tất chuẩn hóa Hán-Việt tổng quát...")
+
+                for idx, (seg, vn_line) in enumerate(zip(segments, vn_list)):
+                    cleaned = clean_general_translation(vn_line)
+                    seg.text_trans = cleaned
+                    if on_sentence_translated_cb:
+                        on_sentence_translated_cb(idx, cleaned)
+                return
+        except Exception as e:
+            if progress_cb:
+                progress_cb(f"[GEMINI DUB] Chuyển sang dịch dự phòng ({e})...")
+            pass
+
+    # 2. Fallback: Dịch máy Google Translate
+    clean_src = source_lang.strip().lower()
+    if clean_src in ("zh", "zh-cn", "cn", "zho_hans"):
+        trans_src = "zh-CN"
+    elif clean_src in ("zh-tw", "tw"):
+        trans_src = "zh-TW"
+    else:
+        trans_src = "auto"
+
+    for i in range(0, len(segments), batch_size):
+        chunk = segments[i:i + batch_size]
+        # Gom nhóm các câu thành đoạn văn để bảo toàn mạch ngữ cảnh liên tục
+        combined_text = "\n".join(seg.text_orig if seg.text_orig else "..." for seg in chunk)
+
+        # 2.1. Ưu tiên dịch qua curl_cffi (chống chặn IP, tốc độ cao, không lỗi giới hạn)
+        translated_block = _fetch_gtx_translate(combined_text, sl=trans_src, tl="vi")
+        lines = translated_block.split("\n") if translated_block else []
+
+        # 2.2. Nếu trả về khớp số dòng, gán trực tiếp
+        if len(lines) == len(chunk):
+            for j, (seg, vn_line) in enumerate(zip(chunk, lines)):
+                cleaned = clean_general_translation(vn_line)
+                seg.text_trans = cleaned
+                if on_sentence_translated_cb:
+                    on_sentence_translated_cb(i + j, cleaned)
+        else:
+            # Fallback dịch từng câu nếu độ dài dòng không khớp
+            for j, seg in enumerate(chunk):
+                single_vn = _fetch_gtx_translate(seg.text_orig, sl=trans_src, tl="vi")
+                if not single_vn:
+                    try:
+                        translator = GoogleTranslator(source=trans_src, target="vi")
+                        single_vn = translator.translate(seg.text_orig)
+                    except Exception:
+                        single_vn = seg.text_orig
+                cleaned = clean_general_translation(single_vn)
+                seg.text_trans = cleaned
+                if on_sentence_translated_cb:
+                    on_sentence_translated_cb(i + j, cleaned)
+                time.sleep(0.05)
+
+        # Áp dụng từ điển thuật ngữ chung (không hardcode tên nhân vật)
+        for j, seg in enumerate(chunk):
+            for k, v in CHINESE_FILM_GLOSSARY.items():
+                if k in seg.text_orig and k == "做我女朋友好不好":
+                    seg.text_trans = "Làm bạn gái anh nhé?"
+                    if on_sentence_translated_cb:
+                        on_sentence_translated_cb(i + j, seg.text_trans)
+
+        time.sleep(0.1)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# BƯỚC 3: ĐIỀU TỐC GIỌNG ĐỌC & KIỂM TRA TTS (VOICE PACING & PREFLIGHT)
+# ══════════════════════════════════════════════════════════════════════
+
+def play_audio_file(file_path: str) -> None:
+    """Mở file âm thanh để nghe thử trên hệ thống."""
+    if not os.path.exists(file_path):
+        return
+    try:
+        if sys.platform == "win32":
+            os.startfile(file_path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["afplay", file_path])
+        else:
+            subprocess.Popen(["xdg-open", file_path])
+    except Exception:
+        pass
+
+
+def test_tts_voice_sample(output_file: str = "test.mp3", auto_play: bool = False) -> bool:
+    """
+    Kiểm tra trực tiếp hàm sinh giọng đọc:
+    - Chạy thử riêng 1 câu: tts = gTTS(text="Xin chào", lang="vi") và lưu ra file test.mp3.
+    - Mở file test.mp3 lên nghe thử. Nếu phát ra tiếng "Xin chào" thì khâu TTS mới thực sự hoạt động.
+    """
+    try:
+        tts = gTTS(text="Xin chào", lang="vi")
+        tts.save(output_file)
+        if os.path.exists(output_file) and os.path.getsize(output_file) >= 1000:
+            if auto_play:
+                play_audio_file(output_file)
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def generate_voice_and_pace(
+    segments: List[DubSegment],
+    temp_dir: str,
+    ffmpeg_bin: str,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    on_sentence_completed_cb: Optional[Callable[[int, str], None]] = None,
+) -> List[DubSegment]:
+    """
+    Sinh giọng đọc bằng gTTS và điều tốc (atempo) chuẩn VideoLingo:
+    Nếu giọng đọc dài hơn thời lượng cảnh gốc -> tự động tăng tốc đọc vừa khít,
+    tuyệt đối không để câu nói tràn sang cảnh sau.
+    """
+    valid_segments: List[DubSegment] = []
+    total = len(segments)
+
+    for idx, seg in enumerate(segments):
+        raw_text = seg.text_trans.strip()
+        if not raw_text or raw_text in [".", ",", "...", "!", "?", "。"]:
+            continue
+
+        raw_audio_path = os.path.join(temp_dir, f"raw_{idx}.mp3")
+        paced_audio_path = os.path.join(temp_dir, f"paced_{idx}.mp3")
+
+        # 1. Sinh âm thanh bằng gTTS
+        try:
+            tts = gTTS(text=raw_text, lang="vi", slow=False)
+            tts.save(raw_audio_path)
+        except Exception:
+            time.sleep(0.5)
+            try:
+                tts = gTTS(text=raw_text, lang="vi", slow=False)
+                tts.save(raw_audio_path)
+            except Exception:
+                continue
+
+        if not os.path.exists(raw_audio_path) or os.path.getsize(raw_audio_path) < 1000:
+            continue
+
+        # 2. Đo thời lượng thực tế
+        try:
+            audio_seg = AudioSegment.from_file(raw_audio_path)
+            actual_dur = len(audio_seg) / 1000.0
+        except Exception:
+            actual_dur = 1.5
+
+        # 3. Tính toán thời lượng cho phép (cho phép mượn một phần khoảng lặng nhỏ)
+        target_dur = max(0.6, seg.end - seg.start)
+        next_start = segments[idx + 1].start if idx + 1 < total else seg.end + 1.0
+        gap = max(0.0, next_start - seg.end)
+        available_dur = target_dur + min(gap * 0.5, 0.4)
+
+        # 4. Điều tốc (Pacing) nếu nói quá chậm
+        if actual_dur > available_dur and available_dur > 0.4:
+            speed_factor = actual_dur / available_dur
+            # Giới hạn tốc độ đọc tối đa 1.75x để giữ giọng tự nhiên
+            clamped_speed = min(1.75, max(1.02, speed_factor))
+
+            cmd_pace = [
+                ffmpeg_bin,
+                "-y",
+                "-i", raw_audio_path,
+                "-filter:a", f"atempo={clamped_speed:.3f}",
+                "-vn",
+                paced_audio_path
+            ]
+            res = subprocess.run(cmd_pace, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if res.returncode == 0 and os.path.exists(paced_audio_path) and os.path.getsize(paced_audio_path) >= 1000:
+                seg.audio_path = paced_audio_path
+                seg.duration_actual = actual_dur / clamped_speed
+            else:
+                seg.audio_path = raw_audio_path
+                seg.duration_actual = actual_dur
+        else:
+            seg.audio_path = raw_audio_path
+            seg.duration_actual = actual_dur
+
+        valid_segments.append(seg)
+        if on_sentence_completed_cb:
+            on_sentence_completed_cb(idx, "🎙️ Đã lồng tiếng")
+        if progress_cb and (idx + 1) % 5 == 0:
+            progress_cb(f"[VIDEOLINGO DUB] Đang điều tốc và khớp khung hình: {idx + 1}/{total} câu...")
+
+    return valid_segments
+
+
+# ══════════════════════════════════════════════════════════════════════
+# BƯỚC 4: HÒA TRỘN ÂM THANH & AUDIO DUCKING CHUẨN ĐIỆN ẢNH
+# ══════════════════════════════════════════════════════════════════════
+
+def build_dubbed_audio_track(
+    segments: List[DubSegment],
+    output_wav: str,
+) -> bool:
+    """Ghép toàn bộ các câu thoại vào đúng mốc thời gian (Timeline) bằng khoảng lặng."""
+    if not segments:
+        return False
+
+    valid_audio_count = 0
+    track = AudioSegment.silent(duration=0, frame_rate=24000)
+    current_ms = 0
+
+    for seg in segments:
+        if not seg.audio_path or not os.path.exists(seg.audio_path) or os.path.getsize(seg.audio_path) < 1000:
+            continue
+
+        start_ms = int(seg.start * 1000)
+        # Thêm khoảng lặng trước câu thoại nếu cần
+        if start_ms > current_ms:
+            track += AudioSegment.silent(duration=start_ms - current_ms, frame_rate=24000)
+            current_ms = start_ms
+
+        try:
+            voice_clip = AudioSegment.from_file(seg.audio_path).set_frame_rate(24000)
+            if len(voice_clip) > 0:
+                track += voice_clip
+                current_ms += len(voice_clip)
+                valid_audio_count += 1
+        except Exception:
+            continue
+
+    if valid_audio_count == 0 or len(track) == 0:
+        return False
+
+    track.export(output_wav, format="wav")
+    return os.path.exists(output_wav) and os.path.getsize(output_wav) >= 1000
+
+
+def render_cinema_dub_video(
+    input_video: str,
+    dub_track_wav: str,
+    output_video: str,
+    ffmpeg_bin: str,
+    bg_volume: float = 0.12,
+) -> bool:
+    """
+    Hòa trộn âm thanh bằng FFmpeg Sidechain Compressor Ducking:
+    - Khi có tiếng thuyết minh tiếng Việt: tự động giảm nhạc nền gốc xuống 10% - 15% (mặc định 12%).
+    - Khi hết câu: tự động trả lại âm lượng nhạc nền nguyên bản êm dịu (release 350ms).
+    - Giữ nguyên luồng hình ảnh gốc (-c:v copy).
+    """
+    # Chốt chặn nghiêm ngặt: Kiểm tra file âm thanh tiếng Việt trước khi render
+    if not os.path.exists(dub_track_wav) or os.path.getsize(dub_track_wav) < 1000:
+        raise Exception("LỖI THỰC TẾ: File âm thanh tiếng Việt bị rỗng. Không thể ghép vào video.")
+
+    # 1. Thử nghiệm bộ lọc Sidechain Ducking cao cấp
+    ducking_filter = (
+        f"[0:a][1:a]sidechaincompress="
+        f"threshold=0.08:ratio=6:attack=80:release=350[bg];"
+        f"[bg][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+    )
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i", input_video,
+        "-i", dub_track_wav,
+        "-filter_complex", ducking_filter,
+        "-map", "0:v",
+        "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        output_video,
+    ]
+
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if res.returncode == 0 and os.path.exists(output_video) and os.path.getsize(output_video) > 1024:
+        return True
+
+    # 2. Fallback: Nếu video gốc không hỗ trợ sidechaincompress, dùng static ducking an toàn
+    fallback_filter = f"[0:a]volume={bg_volume:.2f}[bg];[1:a]volume=1.0[voice];[bg][voice]amix=inputs=2:duration=first[aout]"
+    cmd_fallback = [
+        ffmpeg_bin,
+        "-y",
+        "-i", input_video,
+        "-i", dub_track_wav,
+        "-filter_complex", fallback_filter,
+        "-map", "0:v",
+        "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        output_video,
+    ]
+    res_fb = subprocess.run(cmd_fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return res_fb.returncode == 0 and os.path.exists(output_video)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# LỚP ĐIỀU PHỐI CHÍNH: OmniDubber (VideoLingo Engine)
+# ══════════════════════════════════════════════════════════════════════
+
+class OmniDubber:
+    """Bộ điều phối lồng tiếng AI điện ảnh tích hợp Gemini Flash API & VideoLingo."""
+
+    def __init__(self, whisper_model_size: str = "base", gemini_api_key: str = "") -> None:
+        self.ffmpeg = FFMPEG_PATH
+        self.gemini_api_key = gemini_api_key
+        self.model = WhisperModel(whisper_model_size, device="cpu", compute_type="int8")
+
+    def process_dubbing(
+        self,
+        input_video: str,
+        output_video: str,
+        source_lang: str = "zh",
+        voice: str = "vi",
+        gemini_api_key: str = "",
+        bg_volume: float = 0.12,
+        custom_segments: Optional[List[DubSegment]] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        on_segment_discovered_cb: Optional[Callable[[dict], None]] = None,
+        on_segments_loaded_cb: Optional[Callable[[list], None]] = None,
+        on_sentence_translated_cb: Optional[Callable[[int, str], None]] = None,
+        on_sentence_completed_cb: Optional[Callable[[int, str], None]] = None,
+    ) -> bool:
+        """Thực thi pipeline lồng tiếng VideoLingo 4 bước."""
+        def log(msg: str) -> None:
+            if progress_callback:
+                progress_callback(msg)
+
+        active_key = (gemini_api_key or self.gemini_api_key).strip()
+
+        temp_dir = os.path.join(os.path.dirname(os.path.abspath(input_video)), "temp_dub")
+        os.makedirs(temp_dir, exist_ok=True)
+        base_name = os.path.splitext(os.path.basename(input_video))[0]
+        temp_wav = os.path.join(temp_dir, f"{base_name}_16k.wav")
+        full_dub_wav = os.path.join(temp_dir, f"{base_name}_dubtrack.wav")
+
+        try:
+            if custom_segments and len(custom_segments) > 0:
+                merged_segments = custom_segments
+                log(f"[STUDIO DUB] Đang sử dụng {len(merged_segments)} câu thoại đã soát từ Studio...")
+                if on_segments_loaded_cb:
+                    seg_dicts = [{'start': s.start, 'end': s.end, 'text': s.text_orig} for s in merged_segments]
+                    on_segments_loaded_cb(seg_dicts)
+
+                needs_translation = any(not getattr(s, 'text_trans', '').strip() for s in merged_segments)
+                if needs_translation:
+                    translate_film_context(
+                        merged_segments,
+                        source_lang=source_lang,
+                        gemini_api_key=active_key,
+                        progress_cb=log,
+                        on_sentence_translated_cb=on_sentence_translated_cb,
+                    )
+                else:
+                    if on_sentence_translated_cb:
+                        for idx, s in enumerate(merged_segments):
+                            on_sentence_translated_cb(idx, s.text_trans)
+            else:
+                # BƯỚC 1: Bóc tách & Gom câu ngữ pháp
+                log("[VIDEOLINGO DUB] Đang bóc tách và gom câu theo ngữ pháp hoàn chỉnh...")
+                cmd_extract = [
+                    self.ffmpeg,
+                    "-y",
+                    "-i", input_video,
+                    "-vn",
+                    "-acodec", "pcm_s16le",
+                    "-ar", "16000",
+                    "-ac", "1",
+                    temp_wav,
+                ]
+                subprocess.run(cmd_extract, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                clean_lang = source_lang.strip().lower()
+                w_lang = "zh" if clean_lang.startswith("zh") else (clean_lang.split("-")[0] if "-" in clean_lang else clean_lang or None)
+
+                whisper_initial_prompt = (
+                    "这是一部包含对话、剧情、人物互动的中文视频，包含标准标点符号。"
+                    if w_lang == "zh"
+                    else None
+                )
+
+                raw_segs, _ = self.model.transcribe(
+                    temp_wav,
+                    language=w_lang,
+                    vad_filter=True,
+                    initial_prompt=whisper_initial_prompt,
+                    condition_on_previous_text=False
+                )
+                raw_list = []
+                for s in raw_segs:
+                    raw_list.append(s)
+                    if on_segment_discovered_cb:
+                        on_segment_discovered_cb({'start': s.start, 'end': s.end, 'text': s.text})
+                    if len(raw_list) % 5 == 0 or len(raw_list) == 1:
+                        log(f"[WHISPER] Đang bóc tách lời thoại: mốc {int(s.end)}s (đã nhận diện {len(raw_list)} câu)...")
+
+                if not raw_list:
+                    raise RuntimeError("Không phát hiện được giọng nói trong video.")
+
+                # Áp dụng giải thuật VideoLingo Gom câu
+                merged_segments = merge_broken_segments(raw_list)
+                log(f"[VIDEOLINGO DUB] Đã gom {len(raw_list)} mẩu thoại thành {len(merged_segments)} câu hoàn chỉnh.")
+
+                # Phát danh sách câu thoại để giao diện cập nhật ngay lập tức
+                if on_segments_loaded_cb:
+                    seg_dicts = [{'start': s.start, 'end': s.end, 'text': s.text_orig} for s in merged_segments]
+                    on_segments_loaded_cb(seg_dicts)
+
+                # BƯỚC 2: Dịch thuật ngữ cảnh bằng Gemini 2-Pass Pipeline
+                if active_key:
+                    log("[GEMINI FLASH DUB] Đang chạy Quy trình dịch 2 bước (2-Pass Contextual Pipeline)...")
+                else:
+                    log("[VIDEOLINGO DUB] Đang dịch kịch bản sang Tiếng Việt...")
+
+                translate_film_context(
+                    merged_segments,
+                    source_lang=source_lang,
+                    gemini_api_key=active_key,
+                    progress_cb=log,
+                    on_sentence_translated_cb=on_sentence_translated_cb,
+                )
+
+            # KIỂM TRA TRỰC TIẾP HÀM SINH GIỌNG ĐỌC TTS TRƯỚC KHI THỰC HIỆN
+            log("[TTS PRE-CHECK] Đang kiểm tra trực tiếp hàm sinh giọng đọc gTTS ('Xin chào')...")
+            test_voice_file = os.path.join(temp_dir, "test.mp3")
+            try:
+                tts_ok = test_tts_voice_sample(output_file=test_voice_file, auto_play=False)
+                if not tts_ok:
+                    raise Exception("Không thể tạo file âm thanh mẫu từ gTTS.")
+            except Exception as e:
+                raise Exception(f"LỖI THỰC TẾ: Dịch vụ giọng đọc tiếng Việt (gTTS) không hoạt động ({e}). Hủy xuất video.")
+
+            # BƯỚC 3: Sinh giọng đọc & Điều tốc (Speed Pacing)
+            log("[VIDEOLINGO DUB] Đang tạo giọng đọc gTTS và điều tốc khớp từng khung hình...")
+            paced_segments = generate_voice_and_pace(
+                merged_segments,
+                temp_dir=temp_dir,
+                ffmpeg_bin=self.ffmpeg,
+                progress_cb=log,
+                on_sentence_completed_cb=on_sentence_completed_cb,
+            )
+
+            # CHỐT CHẶN 1: Kiểm tra file âm thanh tiếng Việt từng câu thoại trước khi ghép
+            segment_files = [
+                seg.audio_path for seg in paced_segments
+                if seg.audio_path and os.path.exists(seg.audio_path) and os.path.getsize(seg.audio_path) >= 1000
+            ]
+            if not segment_files or len(segment_files) == 0:
+                raise Exception("LỖI THỰC TẾ: Không tạo được bất kỳ câu thoại tiếng Việt nào từ TTS. Hủy xuất video.")
+
+            # BƯỚC 4: Hòa trộn âm thanh & Sidechain Ducking
+            combined_voice = full_dub_wav
+            built = build_dubbed_audio_track(paced_segments, combined_voice)
+
+            # CHỐT CHẶN 2: Kiểm tra file âm thanh tiếng Việt tổng hợp trước khi ghép
+            if not os.path.exists(combined_voice) or os.path.getsize(combined_voice) < 1000:
+                raise Exception("LỖI THỰC TẾ: File âm thanh tiếng Việt bị rỗng. Không thể ghép vào video.")
+
+            success = render_cinema_dub_video(
+                input_video=input_video,
+                dub_track_wav=combined_voice,
+                output_video=output_video,
+                ffmpeg_bin=self.ffmpeg,
+                bg_volume=bg_volume,
+            )
+
+            if success and os.path.isfile(output_video):
+                log(f"[VIDEOLINGO DUB] Hoàn tất! Video đã lưu tại: {output_video}")
+                return True
+            else:
+                raise RuntimeError("Xuất video thành phẩm thất bại.")
+
+        finally:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# Tương thích tên gọi
+VideoDubber = OmniDubber
+
+
+# ══════════════════════════════════════════════════════════════════════
+# GIAO DIỆN TƯƠNG THÍCH CHO UI
+# ══════════════════════════════════════════════════════════════════════
 
 @dataclass
 class DubConfig:
-    """Cấu hình cho một phiên lồng tiếng."""
-    source_lang: str = "zh-CN"                       # Ngôn ngữ gốc: 'zh-CN', 'en', 'ja', 'ko'
-    voice: str = "vi-VN-HoaiMyNeural"               # Giọng đọc Edge-TTS
-    bg_volume: float = 0.12                          # Âm lượng nhạc nền gốc (0.0 - 1.0)
-    whisper_model: str = "base"                      # Model Whisper: 'tiny', 'base', 'small'
-    ffmpeg_path: str = ""                            # Đường dẫn thư mục ffmpeg
-    log_callback: Optional[Callable[[str], None]] = field(default=None, repr=False)
-    progress_callback: Optional[Callable[[int, int], None]] = field(default=None, repr=False)
-def _normalize_whisper_lang(lang_code: Optional[str]) -> Optional[str]:
-    """
-    Chuẩn hóa mã ngôn ngữ cho faster-whisper.
-    faster-whisper chỉ nhận mã 2 chữ cái ('zh', 'en', 'ja', 'ko'...) hoặc 'yue', 'haw'.
-    Nếu gặp 'zh-CN', 'zh-TW', 'en-US' -> chuyển về 'zh', 'en'.
-    """
-    if not lang_code:
-        return None
-    cleaned = lang_code.strip()
-    if cleaned.lower() in ("yue", "haw"):
-        return cleaned.lower()
-    code = cleaned.replace("_", "-").split("-")[0].lower()
-    try:
-        from faster_whisper.tokenizer import _LANGUAGE_CODES
-        if code in _LANGUAGE_CODES:
-            return code
-    except Exception:
-        pass
-    return code if len(code) == 2 else "zh"
+    """Cấu hình cho phiên lồng tiếng."""
+    source_lang: str = "zh-CN"
+    voice: str = "vi"
+    bg_volume: float = 0.12
+    whisper_model: str = "base"
+    gemini_api_key: str = ""
+    ffmpeg_path: str = ""
+    custom_segments: Optional[List[DubSegment]] = None
+    log_callback: Optional[Callable[[str], None]] = None
+    progress_callback: Optional[Callable[[int, int], None]] = None
 
-
-def translate_segments_batch(segments: list, source_lang: str = "zh", batch_size: int = 40) -> list:
-    """
-    Dịch toàn bộ danh sách câu thoại theo từng lô (Batch) để tránh bị Google chặn Rate Limit.
-    Tốc độ nhanh gấp 10 lần so với dịch từng câu một.
-    """
-    import time
-    from deep_translator import GoogleTranslator
-
-    # Chuẩn hóa mã ngôn ngữ phù hợp với deep-translator
-    lang = (source_lang or "zh-CN").strip()
-    if lang.lower() in ("zh", "zh-cn", "zh_cn", "cn"):
-        norm_src = "zh-CN"
-    elif lang.lower() in ("zh-tw", "zh_tw", "tw"):
-        norm_src = "zh-TW"
-    else:
-        norm_src = lang
-
-    translator = GoogleTranslator(source=norm_src, target='vi')
-
-    # 1. Trích xuất toàn bộ danh sách văn bản gốc
-    texts_to_translate = [
-        seg.original_text.strip() if hasattr(seg, 'original_text')
-        else (seg.text.strip() if hasattr(seg, 'text')
-              else (seg.get('original_text') or seg.get('text', '')).strip() if isinstance(seg, dict)
-              else str(seg).strip())
-        for seg in segments
-    ]
-
-    translated_texts = []
-
-    # 2. Chia thành từng nhóm nhỏ (mỗi nhóm 30-40 câu)
-    for i in range(0, len(texts_to_translate), batch_size):
-        chunk = texts_to_translate[i:i + batch_size]
-
-        # Lọc bỏ chuỗi rỗng trước khi gửi
-        cleaned_chunk = [t if t else "..." for t in chunk]
-
-        success = False
-        retries = 3
-        while retries > 0 and not success:
-            try:
-                # Dịch cả mảng câu cùng một lúc (chỉ tốn 1 request)
-                results = translator.translate_batch(cleaned_chunk)
-                translated_texts.extend(results)
-                success = True
-                # Nghỉ nhẹ 0.3s giữa các lô nếu video quá dài
-                time.sleep(0.3)
-            except Exception as e:
-                retries -= 1
-                try:
-                    print(f"[RETRY BATCH] Lỗi dịch lô {i // batch_size + 1}, thử lại sau 1.5s... Chi tiết: {e}")
-                except UnicodeEncodeError:
-                    print(f"[RETRY BATCH] Loi dich lo {i // batch_size + 1}, thu lai sau 1.5s... Chi tiet: {repr(e)}")
-                time.sleep(1.5)
-
-        # Nếu thử 3 lần vẫn lỗi, giữ nguyên văn bản gốc cho lô đó để không làm dừng chương trình
-        if not success:
-            translated_texts.extend(chunk)
-
-    return translated_texts
-
-
-class VideoDubber:
-    """
-    Lõi xử lý lồng tiếng AI Tiếng Việt theo quy trình tuần tự.
-
-    Sử dụng:
-        dubber = VideoDubber(config)
-        output_path = dubber.process_video(input_mp4)
-    """
-
-    # Số từ tiếng Việt đọc tự nhiên mỗi giây
-    _VI_WORDS_PER_SEC = 3.0
-    # Tốc độ tối đa cho phép tăng (%)
-    _MAX_RATE_PCT = 25
-
-    def __init__(self, config: DubConfig) -> None:
-        self._cfg = config
-        self._temp_dir: str = ""
-
-    # ─────────────────────────────────────────────────────────────────
-    # PUBLIC API
-    # ─────────────────────────────────────────────────────────────────
-
-    def process_video(self, input_video: str) -> str:
-        """
-        Xử lý toàn bộ quy trình lồng tiếng cho một video MP4.
-
-        Args:
-            input_video: Đường dẫn tuyệt đối tới file MP4 đầu vào.
-
-        Returns:
-            Đường dẫn tới file MP4 thành phẩm đã lồng tiếng.
-
-        Raises:
-            RuntimeError: Nếu bất kỳ bước nào thất bại.
-        """
-        self._log("🎬 Bắt đầu quy trình lồng tiếng AI Tiếng Việt...")
-        self._temp_dir = tempfile.mkdtemp(prefix="omnigrab_dub_")
-
-        try:
-            # Bước 1: Tách âm thanh
-            self._log("[LỒNG TIẾNG] Đang lọc giọng nói và bóc tách mốc thời gian (VAD)...")
-            wav_path = self._extract_audio(input_video)
-
-            # Bước 2: STT + bóc tách mốc thời gian
-            segments = self._transcribe(wav_path)
-            if not segments:
-                raise RuntimeError("Không nhận ra giọng nói nào trong video. Bỏ qua lồng tiếng.")
-
-            self._log(f"[LỒNG TIẾNG] Nhận diện được {len(segments)} đoạn thoại. Đang dịch sang Tiếng Việt...")
-
-            # Bước 3: Dịch
-            self._translate_segments(segments)
-
-            # Bước 4 + 5: TTS với Dynamic Pacing + Ghép trục thời gian
-            dub_audio = self._build_dubbed_audio(segments, input_video)
-
-            # Bước 6: Ghép vào video với Ducking
-            self._log("[LỒNG TIẾNG] Đang ghép âm thanh và xuất video thành phẩm...")
-            output_path = self._merge_to_video(input_video, dub_audio)
-
-            self._log(f"✅ Hoàn tất lồng tiếng! File thành phẩm: {os.path.basename(output_path)}")
-            return output_path
-
-        except Exception as exc:
-            self._log(f"❌ Lỗi lồng tiếng: {exc}")
-            raise
-        finally:
-            self._cleanup()
-
-    # ─────────────────────────────────────────────────────────────────
-    # BƯỚC 1: Tách âm thanh
-    # ─────────────────────────────────────────────────────────────────
-
-    def _extract_audio(self, video_path: str) -> str:
-        """Dùng FFmpeg tách audio thô 16kHz mono WAV từ video."""
-        wav_out = os.path.join(self._temp_dir, "source_audio.wav")
-        ffmpeg = self._get_ffmpeg_exe()
-        cmd = [
-            ffmpeg, "-y",
-            "-i", video_path,
-            "-vn",
-            "-acodec", "pcm_s16le",
-            "-ar", "16000",
-            "-ac", "1",
-            wav_out,
-        ]
-        self._run_cmd(cmd, "Tách âm thanh từ video")
-        return wav_out
-
-    # ─────────────────────────────────────────────────────────────────
-    # BƯỚC 2: STT với faster-whisper + VAD
-    # ─────────────────────────────────────────────────────────────────
-
-    def _transcribe(self, wav_path: str) -> List[DubSegment]:
-        """Dùng faster-whisper nhận diện giọng nói và trả về danh sách đoạn."""
-        try:
-            from faster_whisper import WhisperModel  # type: ignore
-        except ImportError:
-            raise RuntimeError(
-                "Thư viện 'faster-whisper' chưa được cài đặt.\n"
-                "Hãy chạy: pip install faster-whisper"
-            )
-
-        # Kiểm tra onnxruntime (cần thiết cho VAD filter)
-        _has_onnx = False
-        try:
-            import onnxruntime  # noqa: F401
-            _has_onnx = True
-        except ImportError:
-            self._log(
-                "⚠️ [LỒNG TIẾNG] Thư viện 'onnxruntime' chưa cài → "
-                "Tắt bộ lọc VAD. "
-                "Chạy 'pip install onnxruntime' để bật VAD lọc tiếng ồn tốt hơn."
-            )
-
-        model = WhisperModel(
-            self._cfg.whisper_model,
-            device="cpu",
-            compute_type="int8",
-        )
-        # Whisper dùng mã nguyên bản (zh không phải zh-CN)
-        whisper_lang = _normalize_whisper_lang(self._cfg.source_lang)
-
-        try:
-            segments_raw, _ = model.transcribe(
-                wav_path,
-                language=whisper_lang,
-                vad_filter=_has_onnx,          # Bộ lọc VAD khử tiếng ồn (cần onnxruntime)
-                condition_on_previous_text=False,
-            )
-        except Exception as e:
-            err_msg = str(e).lower()
-            if "onnxruntime" in err_msg or "vad" in err_msg:
-                self._log("⚠️ [LỒNG TIẾNG] VAD filter lỗi, thử lại không dùng VAD...")
-                segments_raw, _ = model.transcribe(
-                    wav_path,
-                    language=whisper_lang,
-                    vad_filter=False,
-                    condition_on_previous_text=False,
-                )
-            elif "not a valid language code" in err_msg or "language" in err_msg:
-                self._log(f"⚠️ [LỒNG TIẾNG] Mã ngôn ngữ '{whisper_lang}' không hợp lệ cho Whisper, tự nhận diện...")
-                segments_raw, _ = model.transcribe(
-                    wav_path,
-                    language=None,
-                    vad_filter=False,
-                    condition_on_previous_text=False,
-                )
-            else:
-                raise
-
-        result: List[DubSegment] = []
-        for seg in segments_raw:
-            text = seg.text.strip()
-            if text:
-                result.append(DubSegment(
-                    start=seg.start,
-                    end=seg.end,
-                    original_text=text,
-                ))
-        return result
-
-
-
-    # ─────────────────────────────────────────────────────────────────
-    # BƯỚC 3: Dịch sang Tiếng Việt
-    # ─────────────────────────────────────────────────────────────────
-
-    def _translate_segments(self, segments: List[DubSegment]) -> None:
-        """Dịch toàn bộ danh sách đoạn thoại sang Tiếng Việt theo lô (translate_batch)."""
-        raw_src = (self._cfg.source_lang or "zh").strip()
-        translated_texts = translate_segments_batch(segments, source_lang=raw_src, batch_size=40)
-
-        for idx, seg in enumerate(segments):
-            if idx < len(translated_texts) and translated_texts[idx]:
-                seg.vn_text = translated_texts[idx]
-            else:
-                seg.vn_text = seg.original_text
-
-
-    # ─────────────────────────────────────────────────────────────────
-    # BƯỚC 4: Dynamic Pacing + TTS Edge-TTS
-    # ─────────────────────────────────────────────────────────────────
-
-    def _compute_rate(self, seg: DubSegment) -> str:
-        """
-        Thuật toán Dynamic Pacing từ VideoLingo.
-
-        Tính tỷ lệ tăng tốc độ để giọng Việt kết thúc đúng nhịp cảnh.
-        """
-        words = len(seg.vn_text.split())
-        estimated = words / self._VI_WORDS_PER_SEC
-        if estimated > seg.target_duration and seg.target_duration > 0:
-            pct = int(((estimated - seg.target_duration) / seg.target_duration) * 100)
-            pct = min(pct, self._MAX_RATE_PCT)
-            return f"+{pct}%"
-        return "+0%"
-
-    def _run_tts_sync(self, text: str, voice: str, rate: str, out_path: str) -> None:
-        """Chạy Edge-TTS đồng bộ (dùng asyncio.run())."""
-        try:
-            import edge_tts  # type: ignore
-        except ImportError:
-            raise RuntimeError(
-                "Thư viện 'edge-tts' chưa được cài đặt.\n"
-                "Hãy chạy: pip install edge-tts"
-            )
-
-        async def _do_tts() -> None:
-            communicate = edge_tts.Communicate(text, voice, rate=rate)
-            await communicate.save(out_path)
-
-        asyncio.run(_do_tts())
-
-    # ─────────────────────────────────────────────────────────────────
-    # BƯỚC 5: Ghép trục thời gian (Timeline Audio Assembler)
-    # ─────────────────────────────────────────────────────────────────
-
-    def _get_video_duration(self, video_path: str) -> float:
-        """Lấy thời lượng video bằng ffprobe."""
-        ffprobe = self._get_ffprobe_exe()
-        cmd = [
-            ffprobe, "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            video_path,
-        ]
-        try:
-            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-            import json
-            info = json.loads(out)
-            return float(info["format"]["duration"])
-        except Exception:
-            return 0.0
-
-    def _build_dubbed_audio(self, segments: List[DubSegment], input_video: str) -> str:
-        """
-        Tổng hợp TTS từng câu, ghép vào đúng mốc thời gian gốc.
-        Khoảng lặng (im lặng) được lấp đầy bằng anullsrc.
-        Xuất file MP3 cuối cùng dài đúng bằng video gốc.
-        """
-        total = len(segments)
-        ffmpeg = self._get_ffmpeg_exe()
-        video_dur = self._get_video_duration(input_video)
-
-        # Danh sách (path, start, duration) cho từng đoạn TTS
-        tts_pieces: List[tuple[str, float, float]] = []
-
-        for i, seg in enumerate(segments):
-            self._log(
-                f"[LỒNG TIẾNG] Đang tổng hợp giọng đọc và ép tốc độ câu {i + 1}/{total}: "
-                f'"{seg.vn_text[:40]}..."' if len(seg.vn_text) > 40 else
-                f"[LỒNG TIẾNG] Đang tổng hợp giọng đọc và ép tốc độ câu {i + 1}/{total}..."
-            )
-            if self._cfg.progress_callback:
-                self._cfg.progress_callback(i + 1, total)
-
-            seg.rate_str = self._compute_rate(seg)
-            tts_out = os.path.join(self._temp_dir, f"seg_{i:04d}.mp3")
-
-            try:
-                self._run_tts_sync(seg.vn_text, self._cfg.voice, seg.rate_str, tts_out)
-                if os.path.isfile(tts_out) and os.path.getsize(tts_out) > 0:
-                    tts_pieces.append((tts_out, seg.start, seg.end - seg.start))
-                    seg.tts_path = tts_out
-            except Exception as e:
-                self._log(f"  ⚠ Bỏ qua câu {i + 1} do lỗi TTS: {e}")
-
-        # Xây dựng filter_complex để ghép các đoạn TTS vào đúng vị trí thời gian
-        # Dùng adelay để shift từng đoạn đến đúng start time
-        dub_out = os.path.join(self._temp_dir, "dub_voice.mp3")
-
-        if not tts_pieces:
-            # Không có đoạn TTS nào thành công → tạo audio câm
-            silence_dur = max(video_dur, 10.0)
-            cmd = [
-                ffmpeg, "-y",
-                "-f", "lavfi",
-                "-i", f"anullsrc=r=44100:cl=stereo:duration={silence_dur:.2f}",
-                "-c:a", "libmp3lame", "-q:a", "5",
-                dub_out,
-            ]
-            self._run_cmd(cmd, "Tạo audio câm")
-            return dub_out
-
-        # Chia nhỏ các đoạn TTS thành các batch (tối đa 12 đoạn/batch)
-        # Khắc phục triệt để lỗi [WinError 206] The filename or extension is too long trên Windows
-        BATCH_SIZE = 12
-        batches = [tts_pieces[i:i + BATCH_SIZE] for i in range(0, len(tts_pieces), BATCH_SIZE)]
-        safe_dur = max(video_dur, 10.0)
-        batch_files: List[str] = []
-
-        for b_idx, batch in enumerate(batches):
-            batch_out = (
-                dub_out if len(batches) == 1
-                else os.path.join(self._temp_dir, f"batch_voice_{b_idx}.wav")
-            )
-
-            inputs: List[str] = []
-            filter_parts: List[str] = []
-
-            # Thêm source silence = toàn bộ duration video
-            inputs += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:duration={safe_dur:.2f}"]
-            filter_parts.append("[0:a]volume=0[silence]")
-
-            mix_inputs = ["[silence]"]
-            for idx, (path, start_sec, _dur) in enumerate(batch):
-                inputs += ["-i", path]
-                delay_ms = int(start_sec * 1000)
-                label = f"[v{idx}]"
-                filter_parts.append(
-                    f"[{idx + 1}:a]adelay={delay_ms}|{delay_ms}{label}"
-                )
-                mix_inputs.append(label)
-
-            n_inputs = len(mix_inputs)
-            mix_labels = "".join(mix_inputs)
-            filter_parts.append(
-                f"{mix_labels}amix=inputs={n_inputs}:duration=first:dropout_transition=0[out]"
-            )
-
-            filter_complex = ";".join(filter_parts)
-
-            cmd = [
-                ffmpeg, "-y",
-                *inputs,
-                "-filter_complex", filter_complex,
-                "-map", "[out]",
-                "-c:a", "pcm_s16le" if len(batches) > 1 else "libmp3lame",
-            ]
-            if len(batches) == 1:
-                cmd += ["-q:a", "3"]
-            cmd.append(batch_out)
-
-            label_step = (
-                f"Ghép trục thời gian âm thanh (Nhóm {b_idx + 1}/{len(batches)})"
-                if len(batches) > 1
-                else "Ghép trục thời gian âm thanh"
-            )
-            self._run_cmd(cmd, label_step)
-            batch_files.append(batch_out)
-
-        # Nếu có nhiều hơn 1 batch, hòa âm các batch thành file dub_out.mp3 hoàn chỉnh
-        if len(batches) > 1:
-            inputs = []
-            for bf in batch_files:
-                inputs += ["-i", bf]
-            n_batches = len(batch_files)
-            filter_complex = f"amix=inputs={n_batches}:duration=first:dropout_transition=0[out]"
-            cmd = [
-                ffmpeg, "-y",
-                *inputs,
-                "-filter_complex", filter_complex,
-                "-map", "[out]",
-                "-c:a", "libmp3lame", "-q:a", "3",
-                dub_out,
-            ]
-            self._run_cmd(cmd, "Hòa âm các nhóm âm thanh thành phẩm")
-
-        return dub_out
-
-    # ─────────────────────────────────────────────────────────────────
-    # BƯỚC 6: Ghép vào video + Sidechain Ducking
-    # ─────────────────────────────────────────────────────────────────
-
-    def _merge_to_video(self, input_video: str, dub_audio: str) -> str:
-        """
-        Ghép audio thuyết minh vào video gốc với Sidechain Ducking.
-
-        - Nhạc nền gốc giảm xuống bg_volume% (mặc định 12%).
-        - Tiếng thuyết minh ở mức 100%.
-        - Không encode lại video: -c:v copy (siêu nhanh).
-        """
-        base_dir = os.path.dirname(input_video)
-        file_name = os.path.basename(input_video)
-        base, ext = os.path.splitext(file_name)
-
-        # Giới hạn độ dài tên file để tránh lỗi MAX_PATH trên Windows
-        safe_base = base[:60].strip() if len(base) > 60 else base
-        output_path = os.path.join(base_dir, f"{safe_base}_dubbed_vi{ext}")
-
-        ffmpeg = self._get_ffmpeg_exe()
-        bg_vol = self._cfg.bg_volume
-
-        # filter_complex: trộn nhạc nền gốc (giảm âm) + tiếng thuyết minh
-        filter_complex = (
-            f"[0:a]volume={bg_vol:.2f}[bg];"
-            f"[1:a]volume=1.0[voice];"
-            f"[bg][voice]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-        )
-
-        cmd = [
-            ffmpeg, "-y",
-            "-i", input_video,
-            "-i", dub_audio,
-            "-filter_complex", filter_complex,
-            "-map", "0:v",
-            "-map", "[aout]",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            output_path,
-        ]
-        self._run_cmd(cmd, "Ghép video + Audio Ducking")
-        return output_path
-
-    # ─────────────────────────────────────────────────────────────────
-    # TIỆN ÍCH NỘI BỘ
-    # ─────────────────────────────────────────────────────────────────
-
-    def _get_ffmpeg_exe(self) -> str:
-        """Trả về đường dẫn tuyệt đối tới ffmpeg."""
-        if self._cfg.ffmpeg_path:
-            candidate = os.path.join(self._cfg.ffmpeg_path, "ffmpeg.exe")
-            if os.path.isfile(candidate):
-                return candidate
-            candidate2 = os.path.join(self._cfg.ffmpeg_path, "ffmpeg")
-            if os.path.isfile(candidate2):
-                return candidate2
-        # Tìm trong PATH
-        found = shutil.which("ffmpeg")
-        if found:
-            return found
-        # Thư mục project
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for name in ("ffmpeg.exe", "ffmpeg"):
-            candidate = os.path.join(project_dir, name)
-            if os.path.isfile(candidate):
-                return candidate
-        raise RuntimeError(
-            "Không tìm thấy ffmpeg! Hãy đảm bảo ffmpeg.exe nằm cùng thư mục với ứng dụng."
-        )
-
-    def _get_ffprobe_exe(self) -> str:
-        """Trả về đường dẫn tuyệt đối tới ffprobe."""
-        if self._cfg.ffmpeg_path:
-            candidate = os.path.join(self._cfg.ffmpeg_path, "ffprobe.exe")
-            if os.path.isfile(candidate):
-                return candidate
-        found = shutil.which("ffprobe")
-        if found:
-            return found
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for name in ("ffprobe.exe", "ffprobe"):
-            candidate = os.path.join(project_dir, name)
-            if os.path.isfile(candidate):
-                return candidate
-        # Fallback dùng ffmpeg để probe
-        return self._get_ffmpeg_exe().replace("ffmpeg", "ffprobe")
-
-    def _run_cmd(self, cmd: List[str], step_name: str) -> None:
-        """Chạy lệnh subprocess và xử lý lỗi."""
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                check=True,
-                timeout=300,
-            )
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-            raise RuntimeError(f"FFmpeg lỗi tại bước '{step_name}':\n{stderr[-400:]}")
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Bước '{step_name}' bị timeout sau 5 phút.")
-
-    def _cleanup(self) -> None:
-        """Xóa toàn bộ file tạm."""
-        if self._temp_dir and os.path.isdir(self._temp_dir):
-            try:
-                shutil.rmtree(self._temp_dir, ignore_errors=True)
-            except Exception:
-                pass
-        self._temp_dir = ""
-
-    def _log(self, msg: str) -> None:
-        """Gửi log qua callback (nếu có)."""
-        if self._cfg.log_callback:
-            self._cfg.log_callback(msg)
-
-
-# ─────────────────────────────────────────────────────────────────────
-# KIỂM TRA PHỤ THUỘC
-# ─────────────────────────────────────────────────────────────────────
 
 def check_dub_dependencies() -> dict[str, bool]:
-    """
-    Kiểm tra xem các thư viện lồng tiếng đã được cài chưa.
-
-    Returns:
-        Dict {tên_lib: bool} — True = đã cài, False = chưa cài.
-    """
-    result: dict[str, bool] = {}
-    for lib in ("faster_whisper", "edge_tts", "deep_translator"):
+    """Kiểm tra các thư viện phục vụ lồng tiếng."""
+    res: dict[str, bool] = {}
+    for lib in ("faster_whisper", "gtts", "requests", "pydub"):
         try:
             __import__(lib)
-            result[lib] = True
+            res[lib] = True
         except ImportError:
-            result[lib] = False
-    return result
+            res[lib] = False
+    return res

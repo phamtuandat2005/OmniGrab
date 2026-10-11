@@ -11,6 +11,11 @@ import sys
 
 if sys.platform == "win32":
     try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("OmniGrab.VideoDownloader.1.0")
+    except Exception:
+        pass
+    try:
         if sys.stdout is not None:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         if sys.stderr is not None:
@@ -44,8 +49,37 @@ from ui.styles import get_app_stylesheet
 from core.security import run_security_checks, get_resource_path
 
 
+def _ensure_windows_shortcut(ico_path: str) -> None:
+    """Đăng ký shortcut Start Menu có kèm AppUserModelID để Windows Shell luôn hiển thị icon."""
+    if sys.platform != "win32" or getattr(sys, "frozen", False):
+        return
+    try:
+        import win32com.client
+        from win32com.propsys import propsys, pscon
+
+        shortcut_path = os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\OmniGrab.lnk")
+        abs_ico = os.path.abspath(ico_path)
+        if not os.path.isfile(abs_ico):
+            return
+
+        shell = win32com.client.Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortCut(shortcut_path)
+        shortcut.TargetPath = sys.executable
+        shortcut.Arguments = f'"{os.path.abspath(sys.argv[0])}"'
+        shortcut.WorkingDirectory = os.path.dirname(os.path.abspath(sys.argv[0]))
+        shortcut.IconLocation = f"{abs_ico},0"
+        shortcut.Save()
+
+        store = propsys.SHGetPropertyStoreFromParsingName(shortcut_path, None, 2)
+        if store:
+            store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType("OmniGrab.VideoDownloader.1.0"))
+            store.Commit()
+    except Exception:
+        pass
+
+
 def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
-    """Ép Windows Taskbar và Titlebar hiển thị Icon thông qua Win32 API."""
+    """Ép Windows Taskbar và Titlebar hiển thị Icon thông qua Win32 API và Shell Property Store."""
     if sys.platform != "win32" or not os.path.isfile(ico_path):
         return
     try:
@@ -82,7 +116,7 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
         hwnd = wintypes.HWND(hwnd_id)
         abs_path = os.path.abspath(ico_path)
 
-        # Nạp icon lớn (Taskbar / Alt+Tab) và icon nhỏ (Titlebar)
+        # 1. Nạp icon lớn (Taskbar / Alt+Tab) và icon nhỏ (Titlebar)
         hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
         if not hicon_big:
             hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
@@ -99,20 +133,24 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
             SendMessage(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
             if SetClassLongPtr:
                 SetClassLongPtr(hwnd, GCLP_HICONSM, hicon_small)
+
+        # 2. Gán Shell Property Store trực tiếp vào HWND cho Windows 10/11 Taskbar
+        try:
+            from win32com.propsys import propsys, pscon
+            store = propsys.SHGetPropertyStoreForWindow(hwnd_id)
+            if store:
+                store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType("OmniGrab.VideoDownloader.1.0"))
+                store.SetValue(pscon.PKEY_AppUserModel_RelaunchIconResource, propsys.PROPVARIANTType(f"{abs_path},0"))
+                store.Commit()
+        except Exception:
+            pass
+
     except Exception:
         pass
 
 
 def main() -> None:
     """Khởi chạy ứng dụng OmniGrab."""
-    # Đặt App User Model ID cho Windows ngay từ đầu — bắt buộc để taskbar tách riêng icon
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("OmniGrab.VideoDownloader.1.0")
-        except Exception:
-            pass
-
     # Kích hoạt các lớp bảo vệ trước khi nạp giao diện
     run_security_checks()
 
@@ -129,6 +167,7 @@ def main() -> None:
     _icon_path = _icon_ico if os.path.isfile(_icon_ico) else _icon_png
 
     if os.path.isfile(_icon_path):
+        _ensure_windows_shortcut(_icon_path)
         app_icon = QIcon(_icon_path)
         app.setWindowIcon(app_icon)
     else:

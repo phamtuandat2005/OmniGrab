@@ -116,6 +116,14 @@ class LicenseManager:
         candidates.append(exe_dir / "assets" / "public_key.pem")
         candidates.append(exe_dir / "public_key.pem")
 
+        if sys.argv and sys.argv[0]:
+            try:
+                argv0_dir = Path(sys.argv[0]).resolve().parent
+                candidates.append(argv0_dir / "assets" / "public_key.pem")
+                candidates.append(argv0_dir / "public_key.pem")
+            except Exception:
+                pass
+
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             candidates.append(Path(meipass) / "assets" / "public_key.pem")
@@ -149,7 +157,17 @@ class LicenseManager:
                 "Hay dat file khoa cong khai vao thu muc assets/ cua ung dung."
             )
         pem_data = pem_path.read_bytes()
-        return serialization.load_pem_public_key(pem_data)
+        try:
+            return serialization.load_pem_public_key(pem_data)
+        except Exception:
+            # Ho tro tu dong giai ma neu file public_key.pem bi ma hoa Fernet tu VSS-Key-Generator
+            try:
+                from cryptography.fernet import Fernet
+                _FERNET_KEY = b'G12qY-pL0Z8UjH3k4tJ7gR_5VbO9XFqA3D6lC_fM1wY='
+                decrypted = Fernet(_FERNET_KEY).decrypt(pem_data)
+                return serialization.load_pem_public_key(decrypted)
+            except Exception:
+                raise
 
     def _unpack_bundle(self, bundle: dict) -> Tuple[dict, bytes, bytes]:
         """
@@ -194,7 +212,7 @@ class LicenseManager:
         Returns:
             (True, thong_bao_thanh_cong) hoac (False, thong_bao_loi).
         """
-        key_input = key_input.strip()
+        key_input = key_input.strip().strip('"').strip("'")
         if not key_input:
             return False, "Vui lòng dán mã kích hoạt vào ô nhập."
 
@@ -327,7 +345,7 @@ class LicenseManager:
     def _verify_saved_key(self, key_input: str) -> Tuple[bool, str]:
         """Xac thuc key da luu (khong ghi file lai)."""
         try:
-            raw = base64.b64decode(key_input.strip(), validate=True)
+            raw = base64.b64decode(key_input.strip().strip('"').strip("'"), validate=True)
             bundle = json.loads(raw.decode("utf-8"))
             payload, payload_bytes, sig_bytes = self._unpack_bundle(bundle)
 

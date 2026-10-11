@@ -10,12 +10,13 @@ Hộp thoại kích hoạt bản quyền với giao diện Dark Theme hiện đ�
 
 from __future__ import annotations
 
+import os
 from typing import Callable, Optional
 
 # pyrefly: ignore [missing-import]
 from PyQt6.QtCore import Qt, QTimer
 # pyrefly: ignore [missing-import]
-from PyQt6.QtGui import QClipboard, QFont
+from PyQt6.QtGui import QClipboard, QCursor, QFont, QPixmap
 # pyrefly: ignore [missing-import]
 from PyQt6.QtWidgets import (
     QApplication,
@@ -33,7 +34,121 @@ from PyQt6.QtWidgets import (
 )
 
 from core.license_manager import LicenseManager
+from core.security import get_resource_path
 from ui.styles import COLORS
+
+
+# ==========================================================================
+# QR ZOOM DIALOG & CLICKABLE LABEL
+# ==========================================================================
+
+class QRZoomDialog(QDialog):
+    """Cửa sổ phóng to mã QR thanh toán để quét dễ dàng từ điện thoại."""
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        qr_path: str = "",
+        machine_id: str = "",
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Mã QR Thanh Toán — OmniGrab PRO")
+        self.setFixedSize(330, 470)
+        self.setModal(True)
+        self.setWindowFlags(
+            self.windowFlags()
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
+
+        c = COLORS
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {c['bg_primary']}; }}
+            QLabel {{ color: {c['text_primary']}; }}
+            QPushButton {{
+                background-color: {c['btn_secondary_bg']};
+                color: {c['text_primary']};
+                border: 1px solid {c['btn_outline_border']};
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {c['btn_secondary_hover']};
+            }}
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+
+        title = QLabel("📱 Quét mã chuyển khoản VietQR")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {c['accent_blue']};")
+        lay.addWidget(title)
+
+        sub = QLabel("Mở app Ngân hàng để quét mã & tự động điền thông tin")
+        sub.setWordWrap(True)
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setStyleSheet(f"font-size: 11px; color: {c['text_muted']};")
+        lay.addWidget(sub)
+
+        # Khung viền trắng cho mã QR
+        frame = QFrame()
+        frame.setStyleSheet("""
+            background-color: #ffffff;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        """)
+        flay = QVBoxLayout(frame)
+        flay.setContentsMargins(6, 6, 6, 6)
+        lbl_img = QLabel()
+        lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if qr_path and os.path.isfile(qr_path):
+            pix = QPixmap(qr_path)
+            lbl_img.setPixmap(
+                pix.scaled(
+                    200, 268,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        flay.addWidget(lbl_img)
+        lay.addWidget(frame, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Cú pháp chuyển khoản gợi ý
+        info_lbl = QLabel(
+            f"Cú pháp: <b style='color:{c['accent_orange']}'>OMNIGRAB {machine_id} [SĐT]</b>"
+        )
+        info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info_lbl.setStyleSheet("font-size: 11px;")
+        lay.addWidget(info_lbl)
+
+        btn_close = QPushButton("Đóng")
+        btn_close.setFixedHeight(32)
+        btn_close.clicked.connect(self.accept)
+        lay.addWidget(btn_close)
+
+
+class ClickableQRLabel(QLabel):
+    """Label hiển thị QR có hiệu ứng hover pointer và click để phóng to."""
+
+    def __init__(
+        self,
+        qr_path: str = "",
+        machine_id: str = "",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._qr_path = qr_path
+        self._machine_id = machine_id
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setToolTip("🔍 Bấm vào ảnh để phóng to mã QR")
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            dlg = QRZoomDialog(self.window(), self._qr_path, self._machine_id)
+            dlg.exec()
+        super().mousePressEvent(event)
 
 
 # ==========================================================================
@@ -59,9 +174,9 @@ class ActivationDialog(QDialog):
         self._machine_id = self._lm.get_machine_id()
 
         self.setWindowTitle("Kích hoạt Bản quyền OmniGrab PRO")
-        self.resize(790, 520)
-        self.setMinimumWidth(750)
-        self.setMinimumHeight(480)
+        self.resize(830, 560)
+        self.setMinimumWidth(780)
+        self.setMinimumHeight(520)
         self.setModal(True)
         self.setWindowFlags(
             self.windowFlags()
@@ -325,39 +440,136 @@ class ActivationDialog(QDialog):
         """)
         bl = QVBoxLayout(bank_card)
         bl.setContentsMargins(12, 10, 12, 10)
-        bl.setSpacing(5)
+        bl.setSpacing(8)
 
-        lbl_bank_head = QLabel("🏦  Thông tin chuyển khoản:")
+        lbl_bank_head = QLabel("🏦  Thông tin chuyển khoản & Quét mã QR:")
         lbl_bank_head.setStyleSheet(
             f"font-size: 11px; font-weight: 700; color: {c['accent_orange']};"
         )
         bl.addWidget(lbl_bank_head)
 
-        bank_info = [
-            ("Ngân hàng",     "MB Bank"),
-            ("Số tài khoản",  "9704 2220 7284 8450"),
-            ("Chủ tài khoản", "PHẠM TUẤN ĐẠT"),
-        ]
-        for label, value in bank_info:
-            row = QHBoxLayout()
-            row.setSpacing(4)
-            lbl_k = QLabel(f"{label}:")
-            lbl_k.setFixedWidth(100)
-            lbl_k.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
-            lbl_v = QLabel(value)
-            lbl_v.setStyleSheet(
-                f"color: {c['text_primary']}; font-size: 12px; font-weight: 600;"
-            )
-            row.addWidget(lbl_k)
-            row.addWidget(lbl_v)
-            row.addStretch()
-            bl.addLayout(row)
+        # Hàng trên: Thông tin ngân hàng (Trái) + Mã QR (Phải)
+        top_bank_layout = QHBoxLayout()
+        top_bank_layout.setSpacing(12)
 
-        # Cú pháp CK
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(5)
+
+        # Ngân hàng
+        r_bank = QHBoxLayout()
+        r_bank.setSpacing(4)
+        lbl_bk = QLabel("Ngân hàng:")
+        lbl_bk.setFixedWidth(80)
+        lbl_bk.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        lbl_bv = QLabel("MB Bank")
+        lbl_bv.setStyleSheet(f"color: {c['text_primary']}; font-size: 12px; font-weight: 600;")
+        r_bank.addWidget(lbl_bk)
+        r_bank.addWidget(lbl_bv)
+        r_bank.addStretch()
+        info_layout.addLayout(r_bank)
+
+        # Số tài khoản + Nút sao chép STK
+        r_stk = QHBoxLayout()
+        r_stk.setSpacing(6)
+        lbl_sk = QLabel("Số tài khoản:")
+        lbl_sk.setFixedWidth(80)
+        lbl_sk.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        lbl_sv = QLabel("9704 2220 7284 8450")
+        lbl_sv.setStyleSheet(f"color: {c['accent_green']}; font-size: 12px; font-weight: 700;")
+        btn_copy_stk = QPushButton("Sao chép")
+        btn_copy_stk.setFixedHeight(20)
+        btn_copy_stk.setToolTip("Sao chép số tài khoản MB Bank")
+        btn_copy_stk.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['bg_input']};
+                color: {c['text_secondary']};
+                border: 1px solid {c['bg_input_border']};
+                border-radius: 4px;
+                padding: 0 6px;
+                font-size: 10px;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                color: {c['accent_green']};
+                border-color: {c['accent_green']};
+            }}
+        """)
+        btn_copy_stk.clicked.connect(
+            lambda: self._on_copy_stk("9704222072848450", btn_copy_stk)
+        )
+        r_stk.addWidget(lbl_sk)
+        r_stk.addWidget(lbl_sv)
+        r_stk.addWidget(btn_copy_stk)
+        r_stk.addStretch()
+        info_layout.addLayout(r_stk)
+
+        # Chủ tài khoản
+        r_ctk = QHBoxLayout()
+        r_ctk.setSpacing(4)
+        lbl_ck = QLabel("Chủ tài khoản:")
+        lbl_ck.setFixedWidth(80)
+        lbl_ck.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
+        lbl_cv = QLabel("PHẠM TUẤN ĐẠT")
+        lbl_cv.setStyleSheet(f"color: {c['text_primary']}; font-size: 12px; font-weight: 600;")
+        r_ctk.addWidget(lbl_ck)
+        r_ctk.addWidget(lbl_cv)
+        r_ctk.addStretch()
+        info_layout.addLayout(r_ctk)
+
+        # Gợi ý
+        tip_lbl = QLabel("💡 Quét mã QR để tự động nhận STK & Chủ TK.")
+        tip_lbl.setWordWrap(True)
+        tip_lbl.setStyleSheet(f"color: {c['accent_cyan']}; font-size: 10px; font-style: italic;")
+        info_layout.addWidget(tip_lbl)
+        info_layout.addStretch()
+
+        top_bank_layout.addLayout(info_layout, 1)
+
+        # Mã QR bên phải
+        qr_path = get_resource_path("assets/qr/ma-thanh-toan.png")
+        if os.path.isfile(qr_path):
+            qr_frame = QFrame()
+            qr_frame.setObjectName("qr_box")
+            qr_frame.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            qr_frame.setStyleSheet(f"""
+                QFrame#qr_box {{
+                    background-color: #ffffff;
+                    border: 1px solid rgba(255, 255, 255, 0.3);
+                    border-radius: 8px;
+                }}
+                QFrame#qr_box:hover {{
+                    border: 1px solid {c['accent_blue']};
+                }}
+            """)
+            qr_vbox = QVBoxLayout(qr_frame)
+            qr_vbox.setContentsMargins(4, 4, 4, 4)
+            qr_vbox.setSpacing(2)
+
+            qr_label = ClickableQRLabel(qr_path, self._machine_id)
+            pix = QPixmap(qr_path)
+            scaled_pix = pix.scaled(
+                100, 134,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            qr_label.setPixmap(scaled_pix)
+            qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            qr_vbox.addWidget(qr_label)
+
+            lbl_zoom_hint = QLabel("🔍 Bấm để phóng to")
+            lbl_zoom_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_zoom_hint.setStyleSheet("font-size: 9px; color: #475569; font-weight: 600;")
+            qr_vbox.addWidget(lbl_zoom_hint)
+
+            top_bank_layout.addWidget(qr_frame)
+
+        bl.addLayout(top_bank_layout)
+
+        # Cú pháp CK ở hàng dưới full width
         cu_phap_row = QHBoxLayout()
         cu_phap_row.setSpacing(6)
         lbl_cu = QLabel("Cú pháp CK:")
-        lbl_cu.setFixedWidth(100)
+        lbl_cu.setFixedWidth(80)
         lbl_cu.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px;")
 
         self._cu_phap_edit = QLineEdit(
@@ -376,11 +588,26 @@ class ActivationDialog(QDialog):
                 font-weight: 600;
             }}
         """)
-        btn_copy_ck = QPushButton("📋")
-        btn_copy_ck.setFixedSize(28, 26)
+        btn_copy_ck = QPushButton("📋 Sao chép")
+        btn_copy_ck.setFixedHeight(26)
         btn_copy_ck.setToolTip("Sao chép cú pháp chuyển khoản")
+        btn_copy_ck.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['bg_input']};
+                color: {c['accent_orange']};
+                border: 1px solid {c['accent_orange']};
+                border-radius: 4px;
+                padding: 0 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {c['accent_orange']};
+                color: #ffffff;
+            }}
+        """)
         btn_copy_ck.clicked.connect(
-            lambda: self._copy_text(self._cu_phap_edit.text(), "cú pháp chuyển khoản")
+            lambda: self._on_copy_ck(self._cu_phap_edit.text(), btn_copy_ck)
         )
 
         cu_phap_row.addWidget(lbl_cu)
@@ -511,6 +738,18 @@ class ActivationDialog(QDialog):
         self._copy_text(self._machine_id, "mã máy tính")
         self._btn_copy_mid.setText("✅ Đã chép!")
         QTimer.singleShot(2000, lambda: self._btn_copy_mid.setText("📋 Sao chép"))
+
+    def _on_copy_stk(self, stk: str, btn: QPushButton) -> None:
+        """Sao chép số tài khoản MB Bank vào clipboard."""
+        self._copy_text(stk, "số tài khoản")
+        btn.setText("✅ Đã chép!")
+        QTimer.singleShot(2000, lambda: btn.setText("Sao chép"))
+
+    def _on_copy_ck(self, text: str, btn: QPushButton) -> None:
+        """Sao chép cú pháp chuyển khoản vào clipboard."""
+        self._copy_text(text, "cú pháp chuyển khoản")
+        btn.setText("✅ Đã chép!")
+        QTimer.singleShot(2000, lambda: btn.setText("📋 Sao chép"))
 
     def _copy_text(self, text: str, label: str = "") -> None:
         cb = QApplication.clipboard()

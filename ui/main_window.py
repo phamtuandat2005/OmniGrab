@@ -22,9 +22,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # pyrefly: ignore [missing-import]
-from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
+from PyQt6.QtCore import QByteArray, QRect, QSettings, Qt, QTimer, QUrl
 # pyrefly: ignore [missing-import]
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QTextCursor, QDesktopServices
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QFont,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QTextCursor,
+)
 # pyrefly: ignore [missing-import]
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -92,6 +101,7 @@ class DubbingDialog(QDialog):
         bg_volume: int,
         whisper_model: str,
         gemini_api_key: str = "",
+        auto_open_dubbed: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -101,13 +111,14 @@ class DubbingDialog(QDialog):
 
         # Lưu giá trị trả về
         self.result_auto_dub = auto_dub
+        self.result_auto_open_dubbed = auto_open_dubbed
         self.result_src_lang = src_lang
         self.result_voice = voice
         self.result_bg_volume = bg_volume
         self.result_whisper_model = whisper_model
         self.result_gemini_api_key = gemini_api_key
 
-        self._build_ui(auto_dub, src_lang, voice, bg_volume, whisper_model, gemini_api_key)
+        self._build_ui(auto_dub, src_lang, voice, bg_volume, whisper_model, gemini_api_key, auto_open_dubbed)
 
     # ─────────────── Build UI ───────────────
 
@@ -119,6 +130,7 @@ class DubbingDialog(QDialog):
         bg_volume: int,
         whisper_model: str,
         gemini_api_key: str = "",
+        auto_open_dubbed: bool = True,
     ) -> None:
         c = COLORS
         self.setStyleSheet(f"""
@@ -198,6 +210,12 @@ class DubbingDialog(QDialog):
         )
         self._chk_auto.setChecked(auto_dub)
         root.addWidget(self._chk_auto)
+
+        self._chk_auto_open = QCheckBox(
+            "Tự động mở video sau khi lồng tiếng / dịch xong"
+        )
+        self._chk_auto_open.setChecked(auto_open_dubbed)
+        root.addWidget(self._chk_auto_open)
 
         # ── Grid cài đặt ──
         grid = QGridLayout()
@@ -411,6 +429,7 @@ class DubbingDialog(QDialog):
 
     def _save_and_accept(self) -> None:
         self.result_auto_dub = self._chk_auto.isChecked()
+        self.result_auto_open_dubbed = self._chk_auto_open.isChecked()
         self.result_src_lang = self._combo_lang.currentData() or "zh-CN"
         self.result_voice = self._combo_voice.currentData() or "vi"
         self.result_bg_volume = self._slider_vol.value()
@@ -464,6 +483,15 @@ class MainWindow(QMainWindow):
         self.whisper_model: str = "base"
         self.gemini_api_key: str = ""
         self.max_workers: int = 3
+        self.auto_open_dubbed: bool = True
+        self.active_page: int = self.PAGE_LINKS
+        self.studio_last_video: str = ""
+        self._saved_screen_name: str = ""
+        self._saved_screen_idx: int = 0
+        self._saved_window_w: int = 1280
+        self._saved_window_h: int = 760
+        self._saved_is_maximized: bool = False
+        self._first_show_done: bool = False
 
         # Nạp cài đặt đã lưu từ phiên trước
         self._load_settings()
@@ -482,6 +510,7 @@ class MainWindow(QMainWindow):
         self._refresh_statusbar()
         self._update_license_statusbar()
         self._update_cookie_ui()
+        self._restore_active_page()
         self._append_log(
             "HỆ THỐNG",
             "OmniGrab v4.0 sẵn sàng. Dán link vào ô nhập hoặc vào Chế độ tải → Quét kênh.",
@@ -546,8 +575,73 @@ class MainWindow(QMainWindow):
         # 9. Gemini API Key (Miễn phí 0đ)
         self.gemini_api_key = str(data.get("gemini_api_key") or qs.value("gemini_api_key", "", type=str) or "")
 
+        # 10. Màn hình làm việc (Chế độ tải / Studio)
+        raw_page = data.get("active_page") if "active_page" in data else qs.value("active_page", self.PAGE_LINKS, type=int)
+        try:
+            self.active_page = int(raw_page)
+        except (ValueError, TypeError):
+            self.active_page = self.PAGE_LINKS
+        if self.active_page not in (self.PAGE_LINKS, self.PAGE_CHANNEL, self.PAGE_STUDIO):
+            self.active_page = self.PAGE_LINKS
+
+        self.studio_last_video = str(data.get("studio_last_video") or qs.value("studio_last_video", "", type=str) or "")
+
+        # 11. Màn hình máy tính & kích thước
+        self._saved_window_w = data.get("window_w") if "window_w" in data else qs.value("window_w", 1280, type=int)
+        self._saved_window_h = data.get("window_h") if "window_h" in data else qs.value("window_h", 760, type=int)
+        self._saved_is_maximized = bool(data.get("is_maximized") if "is_maximized" in data else qs.value("is_maximized", False, type=bool))
+        self._saved_screen_name = str(data.get("screen_name") or qs.value("screen_name", "", type=str) or "")
+        self._saved_screen_idx = data.get("screen_idx") if "screen_idx" in data else qs.value("screen_idx", 0, type=int)
+
+        # 12. Tự động mở video sau khi lồng tiếng / dịch xong
+        if "auto_open_dubbed" in data:
+            self.auto_open_dubbed = bool(data["auto_open_dubbed"])
+        else:
+            self.auto_open_dubbed = qs.value("auto_open_dubbed", True, type=bool)
+
     def _save_settings(self) -> None:
         """Lưu toàn bộ cài đặt người dùng vào JSON và QSettings."""
+        # 1. Thu thập trang làm việc hiện tại
+        cur_page = self.PAGE_LINKS
+        if hasattr(self, "_stack") and self._stack is not None:
+            cur_page = self._stack.currentIndex()
+        elif hasattr(self, "active_page"):
+            cur_page = self.active_page
+
+        studio_vid = getattr(self, "studio_last_video", "")
+        if hasattr(self, "studio_widget") and self.studio_widget and getattr(self.studio_widget, "current_video_path", ""):
+            cur_vid = self.studio_widget.current_video_path
+            if os.path.isfile(cur_vid):
+                studio_vid = cur_vid
+
+        # 2. Thu thập kích thước cửa sổ và màn hình máy tính hiện tại
+        is_max = getattr(self, "_saved_is_maximized", False)
+        win_w = getattr(self, "_saved_window_w", 1280)
+        win_h = getattr(self, "_saved_window_h", 760)
+
+        try:
+            if self.isVisible() or self.width() > 0:
+                is_max = self.isMaximized()
+                normal_geo = self.normalGeometry() if is_max else self.geometry()
+                win_w = normal_geo.width()
+                win_h = normal_geo.height()
+        except Exception:
+            pass
+
+        screen_name = ""
+        screen_idx = 0
+        try:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            if screen:
+                screen_name = screen.name()
+                screens = QGuiApplication.screens()
+                for idx, s in enumerate(screens):
+                    if s.name() == screen.name():
+                        screen_idx = idx
+                        break
+        except Exception:
+            pass
+
         payload = {
             "auto_dub": self.auto_dub,
             "dub_lang": self.dub_lang,
@@ -558,7 +652,24 @@ class MainWindow(QMainWindow):
             "output_dir": self.output_dir,
             "cookies_path": self.cookies_path,
             "max_workers": self.max_workers,
+            "auto_open_dubbed": getattr(self, "auto_open_dubbed", True),
+            "active_page": cur_page,
+            "studio_last_video": studio_vid,
+            "window_w": win_w,
+            "window_h": win_h,
+            "is_maximized": is_max,
+            "screen_name": screen_name,
+            "screen_idx": screen_idx,
         }
+        # Cập nhật cache nội bộ
+        self.active_page = cur_page
+        self.studio_last_video = studio_vid
+        self._saved_is_maximized = is_max
+        self._saved_window_w = win_w
+        self._saved_window_h = win_h
+        self._saved_screen_name = screen_name
+        self._saved_screen_idx = screen_idx
+
         # Lưu ra file JSON
         try:
             with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -570,7 +681,8 @@ class MainWindow(QMainWindow):
         try:
             qs = QSettings("OmniGrab", "OmniGrab")
             for k, v in payload.items():
-                qs.setValue(k, v)
+                if v is not None:
+                    qs.setValue(k, v)
             qs.sync()
         except Exception:
             pass
@@ -585,7 +697,6 @@ class MainWindow(QMainWindow):
             " | TikTok · Douyin · Facebook · YouTube"
         )
         self.setMinimumSize(1100, 660)
-        self.resize(1280, 760)
 
         # Thiết lập Icon cho cửa sổ và Taskbar
         ico_path = get_resource_path("assets/icon.ico")
@@ -597,6 +708,58 @@ class MainWindow(QMainWindow):
             win_icon.addFile(png_path)
         if not win_icon.isNull():
             self.setWindowIcon(win_icon)
+
+        # Luôn căn cửa sổ vào chính giữa màn hình máy tính
+        self._center_window()
+
+    def _center_window(self) -> None:
+        """Căn cửa sổ vào chính giữa màn hình máy tính (hỗ trợ đa màn hình)."""
+        screens = QGuiApplication.screens()
+        if not screens:
+            self.resize(1280, 760)
+            return
+
+        # Xác định màn hình mục tiêu (từ cấu hình phiên trước nếu có nhiều màn hình)
+        target_screen = None
+        saved_name = getattr(self, "_saved_screen_name", "")
+        saved_idx = getattr(self, "_saved_screen_idx", -1)
+
+        if saved_name:
+            for s in screens:
+                if s.name() == saved_name:
+                    target_screen = s
+                    break
+
+        if not target_screen and 0 <= saved_idx < len(screens):
+            target_screen = screens[saved_idx]
+
+        if not target_screen:
+            target_screen = QGuiApplication.primaryScreen() or screens[0]
+
+        avail = target_screen.availableGeometry()
+
+        # Đặt kích thước phù hợp
+        w = max(1100, int(getattr(self, "_saved_window_w", 1280) or 1280))
+        h = max(660, int(getattr(self, "_saved_window_h", 760) or 760))
+        w = min(w, avail.width() - 40)
+        h = min(h, avail.height() - 40)
+        self.resize(w, h)
+
+        # Căn chính xác tâm màn hình
+        center_x = avail.x() + (avail.width() - w) // 2
+        center_y = avail.y() + (avail.height() - h) // 2
+        self.move(center_x, center_y)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not getattr(self, "_first_show_done", False):
+            self._first_show_done = True
+            # Nếu trước đó phóng to toàn màn hình, khôi phục maximized
+            if getattr(self, "_saved_is_maximized", False):
+                self.showMaximized()
+            else:
+                # Căn giữa màn hình sau khi hệ điều hành hiển thị cửa sổ
+                self._center_window()
 
     # ══════════════════════════════════════════════════════════════════
     # MENU BAR
@@ -751,8 +914,9 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(self.PAGE_LINKS)
 
         # Kết nối sự kiện từ Studio
-        self.studio_widget.back_requested.connect(lambda: self.stacked_widget.setCurrentIndex(self.PAGE_LINKS))
+        self.studio_widget.back_requested.connect(lambda: self._switch_page(self.PAGE_LINKS))
         self.studio_widget.export_dubbing_requested.connect(self._on_studio_export_dubbing)
+        self.studio_widget.video_loaded.connect(self._on_studio_video_loaded)
 
         # ── Cột phải: Tiến trình & Log ──
         right = self._build_right_panel()
@@ -1377,7 +1541,7 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self.on_btn_start_clicked)
         self.btn_stop.clicked.connect(self.on_btn_stop_clicked)
         self._btn_export_errors.clicked.connect(self._on_export_errors)
-        self.stacked_widget.currentChanged.connect(self.update_action_buttons_state)
+        self.stacked_widget.currentChanged.connect(self._on_stack_page_changed)
         self.update_action_buttons_state(self.stacked_widget.currentIndex())
 
     # ══════════════════════════════════════════════════════════════════
@@ -1462,10 +1626,12 @@ class MainWindow(QMainWindow):
             bg_volume=self.bg_volume,
             whisper_model=self.whisper_model,
             gemini_api_key=self.gemini_api_key,
+            auto_open_dubbed=self.auto_open_dubbed,
             parent=self,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.auto_dub = dlg.result_auto_dub
+            self.auto_open_dubbed = dlg.result_auto_open_dubbed
             self.dub_lang = dlg.result_src_lang
             self.dub_voice = dlg.result_voice
             self.bg_volume = dlg.result_bg_volume
@@ -1484,7 +1650,7 @@ class MainWindow(QMainWindow):
         )
         if f:
             self.studio_widget.load_video(f)
-            self.stacked_widget.setCurrentIndex(self.PAGE_STUDIO)
+            self._switch_page(self.PAGE_STUDIO)
             self._append_log("STUDIO", f"Đã nạp video vào Studio: {os.path.basename(f)}")
 
     def _on_studio_export_dubbing(self, video_path: str, custom_segments: list) -> None:
@@ -2168,11 +2334,60 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(f"Lồng tiếng AI: câu {current}/{total} ({pct}%)")
 
     def _on_dub_finished(self, output_path: str) -> None:
-        self._append_log("LỒNG TIẾNG", f"✅ Hoàn tất lồng tiếng! → {Path(output_path).name}")
-        QMessageBox.information(
-            self, "Lồng tiếng AI hoàn tất",
-            f"🎉 Đã lồng tiếng Tiếng Việt thành công!\n\n📁 File: {output_path}",
-        )
+        file_name = Path(output_path).name if output_path else ""
+        self._append_log("LỒNG TIẾNG", f"✅ Hoàn tất lồng tiếng! → {file_name}")
+
+        # 1. Tự động nạp video đã dịch vào Studio Widget
+        if hasattr(self, "studio_widget") and output_path and os.path.isfile(output_path):
+            try:
+                # pyrefly: ignore [unexpected-keyword]
+                self.studio_widget.load_video_to_studio(output_path, preserve_table=True)
+            except Exception:
+                pass
+
+        # 2. Tự động mở video đã dịch lên bằng trình phát video mặc định của hệ điều hành
+        if getattr(self, "auto_open_dubbed", True) and output_path and os.path.isfile(output_path):
+            try:
+                if sys.platform == "win32":
+                    os.startfile(os.path.abspath(output_path))
+                else:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(output_path)))
+                self._append_log("LỒNG TIẾNG", f"🎬 Đã mở video: {file_name}")
+            except Exception as e:
+                self._append_log("LỒNG TIẾNG", f"⚠ Không thể tự động mở video: {e}")
+
+        # 3. Hộp thoại thông báo hoàn tất với các nút thao tác tiện lợi
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Lồng tiếng AI hoàn tất")
+        msg_box.setText(f"🎉 Đã lồng tiếng Tiếng Việt thành công!\n\n📁 File: {output_path}")
+        msg_box.setIcon(QMessageBox.Icon.Information)
+
+        btn_play = msg_box.addButton("▶  Mở video", QMessageBox.ButtonRole.ActionRole)
+        btn_folder = msg_box.addButton("📁  Mở thư mục", QMessageBox.ButtonRole.ActionRole)
+        btn_close = msg_box.addButton("Đóng", QMessageBox.ButtonRole.RejectRole)
+        msg_box.setDefaultButton(btn_close)
+
+        msg_box.exec()
+
+        if msg_box.clickedButton() == btn_play:
+            if output_path and os.path.isfile(output_path):
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(os.path.abspath(output_path))
+                    else:
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(output_path)))
+                except Exception:
+                    pass
+        elif msg_box.clickedButton() == btn_folder:
+            if output_path and os.path.exists(output_path):
+                try:
+                    if sys.platform == "win32":
+                        subprocess.Popen(f'explorer /select,"{os.path.abspath(output_path)}"')
+                    else:
+                        folder = os.path.dirname(os.path.abspath(output_path))
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+                except Exception:
+                    pass
 
     def _on_dub_error(self, error_msg: str) -> None:
         self._append_log("LỒNG TIẾNG", f"❌ Lỗi lồng tiếng: {error_msg}")
@@ -2279,7 +2494,40 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════
 
     def _switch_page(self, index: int) -> None:
-        self._stack.setCurrentIndex(index)
+        if 0 <= index < self._stack.count():
+            self._stack.setCurrentIndex(index)
+            self.active_page = index
+            self.update_action_buttons_state(index)
+            self._save_settings()
+
+    def _on_stack_page_changed(self, index: int) -> None:
+        """Đồng bộ khi người dùng chuyển trang bằng bất kỳ phương thức nào."""
+        self.active_page = index
+        self.update_action_buttons_state(index)
+        self._save_settings()
+
+    def _on_studio_video_loaded(self, video_path: str) -> None:
+        """Ghi nhớ video đang nạp trong Studio."""
+        self.studio_last_video = video_path
+        self._save_settings()
+
+    def _restore_active_page(self) -> None:
+        """Khôi phục màn hình làm việc (chế độ tải/studio) và video studio từ phiên trước."""
+        target_page = getattr(self, "active_page", self.PAGE_LINKS)
+        if not isinstance(target_page, int) or target_page < 0 or target_page >= self._stack.count():
+            target_page = self.PAGE_LINKS
+
+        self._switch_page(target_page)
+
+        # Nếu mở lại ở Studio và có video đã lưu trước đó, tự động nạp lại video
+        if target_page == self.PAGE_STUDIO and hasattr(self, "studio_widget"):
+            saved_vid = getattr(self, "studio_last_video", "")
+            if saved_vid and os.path.isfile(saved_vid):
+                try:
+                    self.studio_widget.load_video(saved_vid)
+                    self._append_log("STUDIO", f"Đã khôi phục video: {os.path.basename(saved_vid)}")
+                except Exception:
+                    pass
 
     def _refresh_statusbar(self) -> None:
         dir_disp = self.output_dir if self.output_dir else "Chưa chọn"

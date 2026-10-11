@@ -10,6 +10,9 @@ Tích hợp 4 khâu tinh hoa từ VideoLingo:
 
 from __future__ import annotations
 
+from typing import Any, Callable, List, Optional, Tuple
+
+import json
 import os
 import re
 import shutil
@@ -17,7 +20,6 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
 
 import requests
 
@@ -785,6 +787,54 @@ def render_cinema_dub_video(
     return res_fb.returncode == 0 and os.path.exists(output_video)
 
 
+def format_seconds_to_srt(seconds: float) -> str:
+    """Chuyển giây float sang chuẩn SRT 00:00:00,000."""
+    total_sec = max(0, int(seconds))
+    millis = int(round((seconds - total_sec) * 1000))
+    h = total_sec // 3600
+    m = (total_sec % 3600) // 60
+    s = total_sec % 60
+    return f"{h:02d}:{m:02d}:{s:02d},{millis:03d}"
+
+
+def save_subtitles_and_metadata(video_paths: list[str], segments: list[DubSegment]) -> None:
+    """Tự động xuất file phụ đề .srt và .omnigrab.json đồng bộ cho danh sách video."""
+    if not segments:
+        return
+    for v_path in video_paths:
+        if not v_path:
+            continue
+        try:
+            base_dir = os.path.dirname(os.path.abspath(v_path))
+            file_stem = os.path.splitext(os.path.basename(v_path))[0]
+
+            # 1. File JSON lưu đầy đủ cả câu gốc và câu dịch
+            json_path = os.path.join(base_dir, f"{file_stem}.omnigrab.json")
+            data = []
+            for seg in segments:
+                data.append({
+                    "start": round(float(seg.start), 3),
+                    "end": round(float(seg.end), 3),
+                    "text_orig": getattr(seg, "text_orig", "") or "",
+                    "text_trans": getattr(seg, "text_trans", "") or "",
+                    "status": "🎙️ Đã lồng tiếng",
+                })
+            with open(json_path, "w", encoding="utf-8") as jf:
+                json.dump(data, jf, ensure_ascii=False, indent=2)
+
+            # 2. File SRT chuẩn
+            srt_path = os.path.join(base_dir, f"{file_stem}.srt")
+            with open(srt_path, "w", encoding="utf-8") as sf:
+                for idx, seg in enumerate(segments, start=1):
+                    t_start = format_seconds_to_srt(seg.start)
+                    t_end = format_seconds_to_srt(seg.end)
+                    text = seg.text_trans.strip() if getattr(seg, "text_trans", None) else seg.text_orig.strip()
+                    sf.write(f"{idx}\n{t_start} --> {t_end}\n{text}\n\n")
+        except Exception:
+            pass
+
+
+
 # ══════════════════════════════════════════════════════════════════════
 # LỚP ĐIỀU PHỐI CHÍNH: OmniDubber (VideoLingo Engine)
 # ══════════════════════════════════════════════════════════════════════
@@ -796,6 +846,42 @@ class OmniDubber:
         self.ffmpeg = FFMPEG_PATH
         self.gemini_api_key = gemini_api_key
         self.model = WhisperModel(whisper_model_size, device="cpu", compute_type="int8")
+
+    def transcribe(
+        self,
+        audio_path: str,
+        lang: str = "zh",
+        on_segment_cb: Optional[Callable[[Any], None]] = None,
+    ) -> List[Any]:
+        """
+        Nhận diện giọng nói với bộ lọc VAD nhạy cao và triệt tiêu hoàn toàn ảo giác.
+        """
+        # 1. Cấu hình VAD nhạy hơn để bắt trọn vẹn cả câu ngắn ("Cút đi!") và câu có nhạc nền to
+        vad_params = dict(
+            threshold=0.35,              # Hạ ngưỡng từ 0.5 xuống 0.35 để không bỏ sót tiếng người khi nhạc to
+            min_speech_duration_ms=150,  # Bắt được cả từ ngắn 0.2s như "Cút!"
+            max_speech_duration_s=float('inf'),
+            min_silence_duration_ms=400,
+            speech_pad_ms=300            # Đệm thêm 0.3s trước và sau câu nói
+        )
+
+        # 2. TUYỆT ĐỐI XÓA BỎ initial_prompt (để rỗng hoặc None) để tránh bẫy ảo giác
+        segments, _ = self.model.transcribe(
+            audio_path,
+            language=lang,
+            vad_filter=True,
+            vad_parameters=vad_params,
+            condition_on_previous_text=False,  # Tránh kẹt cửa sổ âm thanh
+            temperature=0.0,
+            initial_prompt=None                # BẮT BUỘC ĐỂ NONE
+        )
+        if on_segment_cb:
+            result = []
+            for s in segments:
+                result.append(s)
+                on_segment_cb(s)
+            return result
+        return list(segments)
 
     def process_dubbing(
         self,
@@ -862,28 +948,22 @@ class OmniDubber:
                 subprocess.run(cmd_extract, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 clean_lang = source_lang.strip().lower()
-                w_lang = "zh" if clean_lang.startswith("zh") else (clean_lang.split("-")[0] if "-" in clean_lang else clean_lang or None)
+                w_lang = "zh" if clean_lang.startswith("zh") else (clean_lang.split("-")[0] if "-" in clean_lang else clean_lang or "zh")
 
-                whisper_initial_prompt = (
-                    "这是一部包含对话、剧情、人物互动的中文视频，包含标准标点符号。"
-                    if w_lang == "zh"
-                    else None
-                )
-
-                raw_segs, _ = self.model.transcribe(
-                    temp_wav,
-                    language=w_lang,
-                    vad_filter=True,
-                    initial_prompt=whisper_initial_prompt,
-                    condition_on_previous_text=False
-                )
-                raw_list = []
-                for s in raw_segs:
-                    raw_list.append(s)
+                discovered_count = 0
+                def _on_seg_discovered(s):
+                    nonlocal discovered_count
+                    discovered_count += 1
                     if on_segment_discovered_cb:
                         on_segment_discovered_cb({'start': s.start, 'end': s.end, 'text': s.text})
-                    if len(raw_list) % 5 == 0 or len(raw_list) == 1:
-                        log(f"[WHISPER] Đang bóc tách lời thoại: mốc {int(s.end)}s (đã nhận diện {len(raw_list)} câu)...")
+                    if discovered_count % 5 == 0 or discovered_count == 1:
+                        log(f"[WHISPER] Đang bóc tách lời thoại: mốc {int(s.end)}s (đã nhận diện {discovered_count} câu)...")
+
+                raw_list = self.transcribe(
+                    temp_wav,
+                    lang=w_lang,
+                    on_segment_cb=_on_seg_discovered,
+                )
 
                 if not raw_list:
                     raise RuntimeError("Không phát hiện được giọng nói trong video.")
@@ -956,6 +1036,10 @@ class OmniDubber:
             )
 
             if success and os.path.isfile(output_video):
+                try:
+                    save_subtitles_and_metadata([input_video, output_video], paced_segments)
+                except Exception:
+                    pass
                 log(f"[VIDEOLINGO DUB] Hoàn tất! Video đã lưu tại: {output_video}")
                 return True
             else:

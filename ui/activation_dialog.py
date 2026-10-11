@@ -335,7 +335,7 @@ class ActivationDialog(QDialog):
 
         bank_info = [
             ("Ngân hàng",     "MB Bank"),
-            ("Số tài khoản",  ""),
+            ("Số tài khoản",  "9704 2220 7284 8450"),
             ("Chủ tài khoản", "PHẠM TUẤN ĐẠT"),
         ]
         for label, value in bank_info:

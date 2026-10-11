@@ -9,7 +9,9 @@ Màn hình chuyên biệt cho phép:
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +79,195 @@ def format_seconds_to_srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{millis:03d}"
 
 
+def is_same_or_related_video(path1: str, path2: str) -> bool:
+    """Kiểm tra xem 2 video có phải là cùng một video hoặc bản gốc/bản lồng tiếng của nhau."""
+    if not path1 or not path2:
+        return False
+    try:
+        p1 = os.path.normpath(os.path.abspath(path1)).lower()
+        p2 = os.path.normpath(os.path.abspath(path2)).lower()
+        if p1 == p2:
+            return True
+
+        def clean_stem(p: str) -> str:
+            stem = os.path.splitext(os.path.basename(p))[0]
+            for suffix in ['_dubbed', '_vi', '_subbed', '_translated', '_raw', '_audio']:
+                if stem.endswith(suffix):
+                    stem = stem[:-len(suffix)]
+            return stem
+
+        dir1 = os.path.dirname(p1)
+        dir2 = os.path.dirname(p2)
+        if dir1 == dir2 and clean_stem(p1) == clean_stem(p2):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def parse_srt_time_to_seconds(time_str: str) -> float:
+    """Chuyển chuỗi thời gian SRT '00:01:23,450' hoặc '00:01:23.450' sang giây float."""
+    time_str = time_str.strip().replace(',', '.')
+    parts = time_str.split(':')
+    if len(parts) == 3:
+        h = float(parts[0])
+        m = float(parts[1])
+        s = float(parts[2])
+        return h * 3600.0 + m * 60.0 + s
+    elif len(parts) == 2:
+        m = float(parts[0])
+        s = float(parts[1])
+        return m * 60.0 + s
+    try:
+        return float(time_str)
+    except Exception:
+        return 0.0
+
+
+def parse_srt_file(file_path: str) -> List[DubSegment]:
+    """Đọc file .srt và chuyển thành danh sách DubSegment."""
+    if not file_path or not os.path.isfile(file_path):
+        return []
+    segments: List[DubSegment] = []
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        blocks = re.split(r'\n\s*\n', content.strip())
+        for block in blocks:
+            lines = [line.strip() for line in block.splitlines() if line.strip()]
+            if len(lines) < 2:
+                continue
+            time_idx = -1
+            for i, line in enumerate(lines):
+                if '-->' in line:
+                    time_idx = i
+                    break
+            if time_idx == -1:
+                continue
+            parts = lines[time_idx].split('-->')
+            if len(parts) != 2:
+                continue
+            start_sec = parse_srt_time_to_seconds(parts[0])
+            end_sec = parse_srt_time_to_seconds(parts[1])
+            text = "\n".join(lines[time_idx + 1:]).strip()
+            if not text:
+                continue
+            segments.append(DubSegment(
+                start=start_sec,
+                end=end_sec,
+                text_orig=text,
+                text_trans=text,
+            ))
+    except Exception:
+        pass
+    return segments
+
+
+def load_segments_from_json(file_path: str) -> List[DubSegment]:
+    """Đọc file .omnigrab.json và chuyển thành danh sách DubSegment."""
+    if not file_path or not os.path.isfile(file_path):
+        return []
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+        segments: List[DubSegment] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            start = float(item.get('start', 0.0))
+            end = float(item.get('end', 0.0))
+            text_orig = str(item.get('text_orig', '')).strip()
+            text_trans = str(item.get('text_trans', '')).strip()
+            segments.append(DubSegment(
+                start=start,
+                end=end,
+                text_orig=text_orig,
+                text_trans=text_trans,
+            ))
+        return segments
+    except Exception:
+        pass
+    return []
+
+
+def save_segments_to_files(video_path: str, segments: List[DubSegment]) -> None:
+    """Tự động lưu kịch bản ra file .omnigrab.json và .srt cùng thư mục với video."""
+    if not video_path or not segments:
+        return
+    try:
+        base_dir = os.path.dirname(os.path.abspath(video_path))
+        file_stem = os.path.splitext(os.path.basename(video_path))[0]
+
+        # 1. Lưu JSON đầy đủ cả gốc lẫn dịch
+        json_path = os.path.join(base_dir, f"{file_stem}.omnigrab.json")
+        data = []
+        for seg in segments:
+            data.append({
+                'start': round(float(seg.start), 3),
+                'end': round(float(seg.end), 3),
+                'text_orig': getattr(seg, 'text_orig', '') or '',
+                'text_trans': getattr(seg, 'text_trans', '') or '',
+                'status': '🎙️ Đã lồng tiếng',
+            })
+        with open(json_path, 'w', encoding='utf-8') as jf:
+            json.dump(data, jf, ensure_ascii=False, indent=2)
+
+        # 2. Lưu SRT phụ đề
+        srt_path = os.path.join(base_dir, f"{file_stem}.srt")
+        with open(srt_path, 'w', encoding='utf-8') as sf:
+            for idx, seg in enumerate(segments, start=1):
+                t_start = format_seconds_to_srt_time(seg.start)
+                t_end = format_seconds_to_srt_time(seg.end)
+                text = seg.text_trans.strip() if getattr(seg, 'text_trans', None) else seg.text_orig.strip()
+                sf.write(f"{idx}\n{t_start} --> {t_end}\n{text}\n\n")
+    except Exception:
+        pass
+
+
+def find_subtitles_for_video(video_path: str) -> Optional[str]:
+    """Tìm file .omnigrab.json hoặc .srt đã có của video này."""
+    if not video_path:
+        return None
+    try:
+        video_path = os.path.abspath(video_path)
+        base_dir = os.path.dirname(video_path)
+        file_stem = os.path.splitext(os.path.basename(video_path))[0]
+
+        clean_stem = file_stem
+        for suffix in ['_dubbed', '_vi', '_subbed', '_translated', '_raw', '_audio']:
+            if clean_stem.lower().endswith(suffix):
+                clean_stem = clean_stem[:-len(suffix)]
+                break
+
+        candidates = [
+            os.path.join(base_dir, f"{file_stem}.omnigrab.json"),
+            os.path.join(base_dir, f"{clean_stem}.omnigrab.json"),
+            os.path.join(base_dir, f"{clean_stem}_dubbed.omnigrab.json"),
+            os.path.join(base_dir, f"{file_stem}.srt"),
+            os.path.join(base_dir, f"{clean_stem}_dubbed.srt"),
+            os.path.join(base_dir, f"{clean_stem}_vi.srt"),
+            os.path.join(base_dir, f"{clean_stem}.srt"),
+        ]
+
+        videos_dir = str(Path.home() / "Videos")
+        candidates.extend([
+            os.path.join(videos_dir, f"{file_stem}.omnigrab.json"),
+            os.path.join(videos_dir, f"{clean_stem}.omnigrab.json"),
+            os.path.join(videos_dir, f"{clean_stem}_dubbed.srt"),
+            os.path.join(videos_dir, f"{clean_stem}_vi.srt"),
+            os.path.join(videos_dir, f"{clean_stem}.srt"),
+        ])
+
+        for cand in candidates:
+            if os.path.isfile(cand) and os.path.getsize(cand) > 10:
+                return cand
+    except Exception:
+        pass
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════════
 # WORKER BÓC TÁCH & DỊCH KỊCH BẢN TRONG NỀN
 # ══════════════════════════════════════════════════════════════════════
@@ -137,26 +328,20 @@ class StudioTranscribeWorker(QThread):
             # 2. Nhận diện giọng nói
             self.progress_status.emit("Đang nhận diện lời thoại bằng Whisper...")
             clean_lang = self._source_lang.strip().lower()
-            w_lang = "zh" if clean_lang.startswith("zh") else (clean_lang.split("-")[0] if "-" in clean_lang else clean_lang or None)
+            w_lang = "zh" if clean_lang.startswith("zh") else (clean_lang.split("-")[0] if "-" in clean_lang else clean_lang or "zh")
 
-            whisper_initial_prompt = (
-                "这是一部包含对话、剧情、人物互动的中文视频，包含标准标点符号。"
-                if w_lang == "zh"
-                else None
-            )
+            discovered_count = 0
+            def _on_seg_discovered_studio(s):
+                nonlocal discovered_count
+                discovered_count += 1
+                if discovered_count % 5 == 0 or discovered_count == 1:
+                    self.progress_status.emit(f"Đang nhận diện giọng nói: mốc {int(s.end)}s (đã bóc tách {discovered_count} câu)...")
 
-            raw_segs, _ = dubber.model.transcribe(
+            raw_list = dubber.transcribe(
                 temp_wav,
-                language=w_lang,
-                vad_filter=True,
-                initial_prompt=whisper_initial_prompt,
-                condition_on_previous_text=False,
+                lang=w_lang,
+                on_segment_cb=_on_seg_discovered_studio,
             )
-            raw_list = []
-            for s in raw_segs:
-                raw_list.append(s)
-                if len(raw_list) % 5 == 0 or len(raw_list) == 1:
-                    self.progress_status.emit(f"Đang nhận diện giọng nói: mốc {int(s.end)}s (đã bóc tách {len(raw_list)} câu)...")
 
             if not raw_list:
                 raise RuntimeError("Không phát hiện được lời thoại trong video.")
@@ -207,6 +392,7 @@ class DubbingStudioWidget(QWidget):
     back_requested = pyqtSignal()
     export_dubbing_requested = pyqtSignal(str, list)   # (video_path, list_of_DubSegment)
     export_srt_requested = pyqtSignal(str, list)       # (video_path, list_of_DubSegment)
+    video_loaded = pyqtSignal(str)                     # (video_path)
 
     # Các cột bảng kịch bản
     COL_TIME = 0
@@ -248,11 +434,6 @@ class DubbingStudioWidget(QWidget):
         h_layout = QHBoxLayout(header_frame)
         h_layout.setContentsMargins(8, 4, 8, 4)
         h_layout.setSpacing(10)
-
-        title_lbl = QLabel("🎬  Studio Lồng tiếng & Soát kịch bản")
-        title_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        title_lbl.setStyleSheet(f"color: {c['accent_blue']};")
-        h_layout.addWidget(title_lbl)
 
         self._lbl_video_title = QLabel("Chưa mở video nào")
         self._lbl_video_title.setStyleSheet(f"color: {c['text_secondary']}; font-size: 12px;")
@@ -534,6 +715,7 @@ class DubbingStudioWidget(QWidget):
                 if self.table.currentRow() != row:
                     self.table.blockSignals(True)
                     self.table.selectRow(row)
+                    self.table.scrollToItem(item)
                     self.table.blockSignals(False)
                 break
 
@@ -578,30 +760,81 @@ class DubbingStudioWidget(QWidget):
     # ĐIỀU KHIỂN VIDEO
     # ─────────────────────────────────────────────────────────────────
 
-    def load_video_to_studio(self, video_path: str) -> None:
-        """Nạp video lên khung phát QVideoWidget và lưu đường dẫn."""
+    def _try_load_existing_subtitles(self, video_path: str) -> bool:
+        """Tìm và tự động nạp phụ đề / kịch bản đã dịch trước đó của video nếu có."""
+        sub_file = find_subtitles_for_video(video_path)
+        if not sub_file:
+            return False
+
+        segments: List[DubSegment] = []
+        if sub_file.endswith(".json"):
+            segments = load_segments_from_json(sub_file)
+        elif sub_file.endswith(".srt"):
+            segments = parse_srt_file(sub_file)
+
+        if not segments:
+            return False
+
+        self.set_segments(segments, is_finished=True)
+        if self._lbl_status_msg:
+            self._lbl_status_msg.setText(f"📋 Đã tự động tải kịch bản đã dịch ({len(segments)} câu thoại)")
+            self._lbl_status_msg.setVisible(True)
+        return True
+
+    def load_video_to_studio(self, video_path: str, preserve_table: bool = False) -> None:
+        """Nạp video lên khung phát QVideoWidget và đồng bộ kịch bản."""
         if not video_path or not os.path.isfile(video_path):
             return
 
-        is_new = (self.current_video_path != video_path)
+        old_path = self.current_video_path
+        is_same_file = (old_path == video_path)
+        is_related = is_same_or_related_video(old_path, video_path)
+
+        already_loaded_source = False
+        try:
+            from PyQt6.QtCore import QUrl
+            if is_same_file and self.player.source() == QUrl.fromLocalFile(video_path):
+                already_loaded_source = True
+        except Exception:
+            pass
+
         self.current_video_path = video_path
         self._lbl_video_title.setText(f"📁 {os.path.basename(video_path)}")
-        from PyQt6.QtCore import QUrl
-        # Nạp vào QMediaPlayer để phát trên QVideoWidget
-        self.media_player.setSource(QUrl.fromLocalFile(video_path))
-        self.media_player.play()
-        self.media_player.pause()
-        self._btn_play.setText("▶  Phát")
 
-        if is_new:
+        if not already_loaded_source:
+            from PyQt6.QtCore import QUrl
+            self.media_player.setSource(QUrl.fromLocalFile(video_path))
+            self.media_player.pause()
+            self._btn_play.setText("▶  Phát")
+
+        # KIỂM TRA GIỮ LẠI BẢNG KỊCH BẢN:
+        # Nếu preserve_table hoặc video liên quan (như bản lồng tiếng vừa tạo xong),
+        # và bảng hiện tại đang có dữ liệu câu thoại -> TUYỆT ĐỐI KHÔNG XÓA BẢNG!
+        if (preserve_table or is_related) and self.table.rowCount() > 0:
+            if self._lbl_status_msg:
+                self._lbl_status_msg.setText(f"🎉 Kịch bản đã sẵn sàng ({self.table.rowCount()} câu thoại)")
+                self._lbl_status_msg.setVisible(True)
+            self.video_loaded.emit(video_path)
+            return
+
+        # NẾU LÀ ĐỔI SANG MỘT VIDEO KHÁC (hoặc bảng đang trống):
+        # 1. Kiểm tra xem video này đã từng được dịch trước đó chưa (có file .omnigrab.json hoặc .srt)
+        loaded = self._try_load_existing_subtitles(video_path)
+        if not loaded:
+            # Video mới toanh chưa từng dịch: Xóa bảng sạch sẽ để sẵn sàng dịch
             self.table.setRowCount(0)
-            self._lbl_status_msg.setText("")
-            self._lbl_status_msg.setVisible(False)
-            self._progress_bar.setVisible(False)
+            self.segments = []
+            if self._lbl_status_msg:
+                self._lbl_status_msg.setText("")
+                self._lbl_status_msg.setVisible(False)
+            if self._progress_bar:
+                self._progress_bar.setVisible(False)
 
-    def load_video(self, video_path: str) -> None:
+        self.video_loaded.emit(video_path)
+
+    def load_video(self, video_path: str, preserve_table: bool = False) -> None:
         """Alias tương thích ngược."""
-        self.load_video_to_studio(video_path)
+        self.load_video_to_studio(video_path, preserve_table=preserve_table)
 
     def _on_choose_video(self) -> None:
         f, _ = QFileDialog.getOpenFileName(
@@ -783,13 +1016,27 @@ class DubbingStudioWidget(QWidget):
         if self._lbl_status_msg:
             self._lbl_status_msg.setText("🎉 Đã hoàn tất lồng tiếng video thành công!")
 
-    def set_segments(self, segments: List[DubSegment]) -> None:
+        # Tự động lưu kịch bản phụ đề ra đĩa cho cả video gốc và video lồng tiếng
+        segments = self.get_segments()
+        if segments:
+            if self.current_video_path:
+                save_segments_to_files(self.current_video_path, segments)
+            if output_video_path and os.path.isfile(output_video_path):
+                save_segments_to_files(output_video_path, segments)
+
+        if output_video_path and os.path.isfile(output_video_path):
+            self.load_video_to_studio(output_video_path, preserve_table=True)
+
+    def set_segments(self, segments: List[DubSegment], is_finished: bool = False) -> None:
         """Nạp danh sách DubSegment vào bảng 4 cột."""
         self.segments = segments
         self.on_segments_loaded(segments)
         for row, seg in enumerate(segments):
-            if getattr(seg, 'text_trans', None):
-                self.on_sentence_translated(row, seg.text_trans)
+            text_trans = getattr(seg, 'text_trans', None)
+            if text_trans:
+                self.on_sentence_translated(row, text_trans)
+                if is_finished:
+                    self.on_sentence_completed(row, "🎙️ Đã lồng tiếng")
 
     def get_segments(self) -> List[DubSegment]:
         """Thu thập danh sách câu thoại (kèm các sửa đổi của người dùng) từ bảng."""
@@ -873,6 +1120,8 @@ class DubbingStudioWidget(QWidget):
         self._progress_bar.setVisible(False)
         self._lbl_status_msg.setVisible(False)
         self.set_segments(segments)
+        if self.current_video_path:
+            save_segments_to_files(self.current_video_path, segments)
         QMessageBox.information(
             self, "Hoàn tất bóc tách",
             f"🎉 Đã bóc tách và dịch thành công {len(segments)} câu thoại!\n\n"

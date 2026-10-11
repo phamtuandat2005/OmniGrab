@@ -55,6 +55,11 @@ class DownloadWorker(QThread):
         dub_voice: str = "vi",
         whisper_model: str = "base",
         gemini_api_key: str = "",
+        auto_upload_tiktok: bool = False,
+        tiktok_cookies_path: str = "",
+        tiktok_privacy: str = "public",
+        tiktok_delay_minutes: int = 45,
+        tiktok_headless: bool = True,
         parent: Optional[Any] = None,
     ) -> None:
         """
@@ -83,6 +88,11 @@ class DownloadWorker(QThread):
         self.dub_voice = dub_voice
         self.whisper_model = whisper_model
         self.gemini_api_key = gemini_api_key
+        self.auto_upload_tiktok = auto_upload_tiktok
+        self.tiktok_cookies_path = tiktok_cookies_path
+        self.tiktok_privacy = tiktok_privacy
+        self.tiktok_delay_minutes = tiktok_delay_minutes
+        self.tiktok_headless = tiktok_headless
         self._dubber: Optional[Any] = None
         self._stop_requested = False
         self._failed_urls: List[str] = []
@@ -174,6 +184,44 @@ class DownloadWorker(QThread):
                                         self._log(f"✅ Lồng tiếng hoàn tất: {os.path.basename(dubbed_path)}")
                                 except Exception as d_err:
                                     self._log(f"⚠ Lỗi lồng tiếng cho {os.path.basename(file_path)}: {d_err}")
+
+                            # Tự động đăng video lên TikTok nếu được cấu hình
+                            if self.auto_upload_tiktok and file_path and os.path.isfile(file_path):
+                                self._log(f"[TIKTOK AUTO] 🎬 Bắt đầu quy trình tự động đăng TikTok cho: {os.path.basename(file_path)}")
+                                try:
+                                    from core.tiktok_uploader import generate_tiktok_caption, upload_to_tiktok
+                                    self._log("[TIKTOK AUTO] Đang dùng Gemini tạo tiêu đề và hashtag TikTok...")
+                                    caption = generate_tiktok_caption(
+                                        script_content=title,
+                                        api_key=self.gemini_api_key,
+                                        video_title=title or os.path.basename(file_path),
+                                    )
+                                    self._log(f"[TIKTOK AUTO] Tiêu đề & Hashtag: {caption}")
+                                    self._log(f"[TIKTOK AUTO] Đang tự động upload lên kênh TikTok (Chế độ: {self.tiktok_privacy})...")
+                                    upload_ok = upload_to_tiktok(
+                                        video_path=file_path,
+                                        caption=caption,
+                                        cookies_path=self.tiktok_cookies_path,
+                                        privacy=self.tiktok_privacy,
+                                        headless=self.tiktok_headless,
+                                        log_callback=self._log,
+                                    )
+                                    if upload_ok:
+                                        self._log("[TIKTOK AUTO] ✅ Đã đăng thành công video lên kênh TikTok!")
+                                except Exception as tt_err:
+                                    self._log(f"[TIKTOK AUTO] ⚠ Không thể đăng TikTok: {tt_err}")
+
+                                # Giãn cách an toàn kênh trước video tiếp theo nếu còn video trong danh sách
+                                if completed < total and self.tiktok_delay_minutes > 0 and not self._stop_requested:
+                                    delay_sec = self.tiktok_delay_minutes * 60
+                                    self._log(f"[TIKTOK AUTO] ⏳ Nghỉ an toàn {self.tiktok_delay_minutes} phút để bảo vệ kênh...")
+                                    for sec_left in range(delay_sec, 0, -1):
+                                        if self._stop_requested:
+                                            break
+                                        if sec_left % 60 == 0:
+                                            self._log(f"[TIKTOK AUTO] ⏳ Còn {sec_left // 60} phút nghỉ trước video tiếp theo...")
+                                        import time
+                                        time.sleep(1)
 
                             self.item_finished.emit(url, True, file_path)
                             self._log(

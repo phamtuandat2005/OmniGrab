@@ -484,6 +484,11 @@ class MainWindow(QMainWindow):
         self.gemini_api_key: str = ""
         self.max_workers: int = 3
         self.auto_open_dubbed: bool = True
+        self.auto_upload_tiktok: bool = False
+        self.tiktok_privacy: str = "public"
+        self.tiktok_delay_minutes: int = 45
+        self.tiktok_cookies_path: str = ""
+        self.tiktok_headless: bool = False
         self.active_page: int = self.PAGE_LINKS
         self.studio_last_video: str = ""
         self._saved_screen_name: str = ""
@@ -599,6 +604,18 @@ class MainWindow(QMainWindow):
         else:
             self.auto_open_dubbed = qs.value("auto_open_dubbed", True, type=bool)
 
+        # 13. Cấu hình tự động đăng TikTok
+        self.auto_upload_tiktok = bool(data.get("auto_upload_tiktok") if "auto_upload_tiktok" in data else qs.value("auto_upload_tiktok", False, type=bool))
+        self.tiktok_privacy = str(data.get("tiktok_privacy") or qs.value("tiktok_privacy", "public", type=str) or "public")
+        raw_tt_delay = data.get("tiktok_delay_minutes") if "tiktok_delay_minutes" in data else qs.value("tiktok_delay_minutes", 45, type=int)
+        try:
+            self.tiktok_delay_minutes = max(1, min(180, int(raw_tt_delay)))
+        except (ValueError, TypeError):
+            self.tiktok_delay_minutes = 45
+        saved_tt_cookie = str(data.get("tiktok_cookies_path") or qs.value("tiktok_cookies_path", "", type=str) or "")
+        self.tiktok_cookies_path = saved_tt_cookie if (saved_tt_cookie and os.path.isfile(saved_tt_cookie)) else ""
+        self.tiktok_headless = bool(data.get("tiktok_headless") if "tiktok_headless" in data else qs.value("tiktok_headless", False, type=bool))
+
     def _save_settings(self) -> None:
         """Lưu toàn bộ cài đặt người dùng vào JSON và QSettings."""
         # 1. Thu thập trang làm việc hiện tại
@@ -653,6 +670,11 @@ class MainWindow(QMainWindow):
             "cookies_path": self.cookies_path,
             "max_workers": self.max_workers,
             "auto_open_dubbed": getattr(self, "auto_open_dubbed", True),
+            "auto_upload_tiktok": getattr(self, "auto_upload_tiktok", False),
+            "tiktok_privacy": getattr(self, "tiktok_privacy", "public"),
+            "tiktok_delay_minutes": getattr(self, "tiktok_delay_minutes", 45),
+            "tiktok_cookies_path": getattr(self, "tiktok_cookies_path", ""),
+            "tiktok_headless": getattr(self, "tiktok_headless", True),
             "active_page": cur_page,
             "studio_last_video": studio_vid,
             "window_w": win_w,
@@ -699,15 +721,11 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 660)
 
         # Thiết lập Icon cho cửa sổ và Taskbar
-        ico_path = get_resource_path("assets/icon.ico")
-        png_path = get_resource_path("assets/icon.png")
-        win_icon = QIcon()
-        if os.path.isfile(ico_path):
-            win_icon.addFile(ico_path)
-        if os.path.isfile(png_path):
-            win_icon.addFile(png_path)
-        if not win_icon.isNull():
-            self.setWindowIcon(win_icon)
+        ico_path = os.path.normpath(get_resource_path("assets/icon.ico"))
+        png_path = os.path.normpath(get_resource_path("assets/icon.png"))
+        target_icon = ico_path if os.path.isfile(ico_path) else png_path
+        if os.path.isfile(target_icon):
+            self.setWindowIcon(QIcon(target_icon))
 
         # Luôn căn cửa sổ vào chính giữa màn hình máy tính
         self._center_window()
@@ -821,6 +839,10 @@ class MainWindow(QMainWindow):
         act_cookie.triggered.connect(self._on_choose_cookie)
         menu_file.addAction(act_cookie)
 
+        act_tiktok_cookie = QAction("🍪  Nạp file Cookie TikTok (.txt)...", self)
+        act_tiktok_cookie.triggered.connect(self._on_choose_tiktok_cookie)
+        menu_file.addAction(act_tiktok_cookie)
+
         act_import = QAction("📋  Nhập danh sách link từ file...", self)
         act_import.triggered.connect(self._on_import_file)
         menu_file.addAction(act_import)
@@ -863,6 +885,10 @@ class MainWindow(QMainWindow):
         act_dub_settings.setShortcut(QKeySequence("Ctrl+L"))
         act_dub_settings.triggered.connect(self._on_open_dub_dialog)
         menu_tools.addAction(act_dub_settings)
+
+        act_tiktok_settings = QAction("📤  Cài đặt Tự động Đăng TikTok...", self)
+        act_tiktok_settings.triggered.connect(self._on_open_tiktok_dialog)
+        menu_tools.addAction(act_tiktok_settings)
 
         act_dub_file = QAction("🎬  Lồng tiếng file MP4 có sẵn trên máy...", self)
         act_dub_file.triggered.connect(self._on_dub_manual)
@@ -917,6 +943,8 @@ class MainWindow(QMainWindow):
         self.studio_widget.back_requested.connect(lambda: self._switch_page(self.PAGE_LINKS))
         self.studio_widget.export_dubbing_requested.connect(self._on_studio_export_dubbing)
         self.studio_widget.video_loaded.connect(self._on_studio_video_loaded)
+        self.studio_widget.status_message.connect(self._on_studio_status_message)
+        self.studio_widget.progress_updated.connect(self._on_studio_progress_updated)
 
         # ── Cột phải: Tiến trình & Log ──
         right = self._build_right_panel()
@@ -1365,6 +1393,36 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(0)
         cl.addWidget(self._progress_bar)
 
+        # Thông báo trạng thái / Hoạt động (Nhận từ Studio, Download, TikTok, AI...)
+        self._status_notify_box = QFrame()
+        self._status_notify_box.setStyleSheet(f"""
+            QFrame {{
+                background-color: {c['bg_card']};
+                border: 1px solid {c['border']};
+                border-left: 3px solid {c['accent_orange']};
+                border-radius: 6px;
+            }}
+        """)
+        sn_layout = QHBoxLayout(self._status_notify_box)
+        sn_layout.setContentsMargins(8, 6, 8, 6)
+        sn_layout.setSpacing(6)
+
+        self._status_notify_label = QLabel("")
+        self._status_notify_label.setStyleSheet(f"""
+            QLabel {{
+                color: {c['accent_orange']};
+                font-size: 11.5px;
+                font-weight: 500;
+                background: transparent;
+                border: none;
+            }}
+        """)
+        self._status_notify_label.setWordWrap(True)
+        sn_layout.addWidget(self._status_notify_label, 1)
+
+        self._status_notify_box.setVisible(False)
+        cl.addWidget(self._status_notify_box)
+
         # Log header
         log_hdr = QHBoxLayout()
         lbl_log = QLabel("NHẬT KÝ HOẠT ĐỘNG (REALTIME)")
@@ -1643,6 +1701,47 @@ class MainWindow(QMainWindow):
             api_info = "Gemini API: Đã có key" if self.gemini_api_key else "Gemini API: Chưa có key"
             self._append_log("LỒNG TIẾNG", f"Cài đặt đã lưu — Tự động lồng tiếng: {status} | {api_info}")
 
+    def _on_choose_tiktok_cookie(self) -> None:
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Chọn file Cookie TikTok", "",
+            "Cookie files (*.txt *.json);;Tất cả file (*.*)"
+        )
+        if f and os.path.isfile(f):
+            self.tiktok_cookies_path = f
+            self._save_settings()
+            self._append_log("TIKTOK AUTO", f"Đã nạp file Cookie TikTok: {os.path.basename(f)}")
+            self._refresh_statusbar()
+            QMessageBox.information(
+                self, "Đã nạp Cookie TikTok",
+                f"✅ Đã nạp thành công file Cookie TikTok:\n{f}\n\n"
+                "Hệ thống đã sẵn sàng cho tính năng tự động đăng video lên TikTok!"
+            )
+
+    def _on_open_tiktok_dialog(self) -> None:
+        from ui.tiktok_upload_dialog import TikTokUploadDialog
+        dlg = TikTokUploadDialog(
+            auto_upload=getattr(self, "auto_upload_tiktok", False),
+            privacy=getattr(self, "tiktok_privacy", "public"),
+            delay_minutes=getattr(self, "tiktok_delay_minutes", 45),
+            cookies_path=getattr(self, "tiktok_cookies_path", ""),
+            headless=getattr(self, "tiktok_headless", False),
+            parent=self,
+        )
+        if dlg.exec():
+            self.auto_upload_tiktok = dlg.result_auto_upload
+            self.tiktok_privacy = dlg.result_privacy
+            self.tiktok_delay_minutes = dlg.result_delay_minutes
+            self.tiktok_cookies_path = dlg.result_cookies_path
+            self.tiktok_headless = dlg.result_headless
+            self._save_settings()
+            self._refresh_statusbar()
+
+            st = "BẬT" if self.auto_upload_tiktok else "TẮT"
+            self._append_log(
+                "TIKTOK AUTO",
+                f"Cài đặt đã lưu — Tự động đăng TikTok: {st} | Chế độ: {self.tiktok_privacy} | Giãn cách: {self.tiktok_delay_minutes}p"
+            )
+
     def _on_dub_manual(self) -> None:
         f, _ = QFileDialog.getOpenFileName(
             self, "Chọn video MP4 để lồng tiếng & soát kịch bản", "",
@@ -1659,6 +1758,52 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Đang xử lý", "Hiện đang có tiến trình lồng tiếng đang chạy!")
             return
         self._start_dubbing(video_path, custom_segments=custom_segments)
+
+    def _on_studio_status_message(self, msg: str) -> None:
+        """Nhận thông báo trạng thái từ Studio và hiển thị tập trung tại panel bên phải."""
+        if not hasattr(self, "_status_notify_label"):
+            return
+
+        if not msg or not msg.strip():
+            self._status_notify_box.setVisible(False)
+            self._status_notify_label.setText("")
+            return
+
+        self._status_notify_label.setText(msg)
+        self._status_notify_box.setVisible(True)
+        self._status_bar.showMessage(msg)
+
+        # Ghi các thông điệp quan trọng vào realtime log
+        if any(token in msg for token in ["[TIKTOK", "Whisper", "Gemini", "🎉", "❌", "🚀", "✨", "kịch bản", "lồng tiếng"]):
+            platform = "TIKTOK" if "TIKTOK" in msg else ("LỒNG TIẾNG" if ("lồng tiếng" in msg.lower() or "gemini" in msg.lower()) else "STUDIO")
+            clean_msg = msg
+            if clean_msg.startswith("[TIKTOK AUTO]"):
+                clean_msg = clean_msg.replace("[TIKTOK AUTO]", "").strip()
+            self._append_log(platform, clean_msg)
+
+    def _on_studio_progress_updated(self, val: int, detail: str) -> None:
+        """Đồng bộ trạng thái thanh tiến trình bên phải theo tiến trình Studio."""
+        if val < 0:
+            # -1: Indeterminate (Đang chạy AI Whisper hoặc Upload TikTok)
+            self._progress_bar.setRange(0, 0)
+            if detail:
+                self._progress_label.setText(f"Tiến độ: {detail}")
+            elif not self._progress_label.text().startswith("Tiến độ: Đang"):
+                self._progress_label.setText("Tiến độ: Đang xử lý...")
+        elif val == 0:
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(0)
+            if detail:
+                self._progress_label.setText(f"Tiến độ: {detail}")
+            else:
+                self._progress_label.setText("Tiến độ: 0%")
+        else:
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(min(100, max(0, val)))
+            text = f"Tiến độ: {val}%"
+            if detail:
+                text += f" — {detail}"
+            self._progress_label.setText(text)
 
     def _on_update_tools(self) -> None:
         reply = QMessageBox.question(
@@ -2145,6 +2290,12 @@ class MainWindow(QMainWindow):
             self.dubbing_worker = None
             self._append_log("LỒNG TIẾNG", "Đã dừng tiến trình lồng tiếng.")
             self._status_bar.showMessage("Đã dừng lồng tiếng")
+            if hasattr(self, "_status_notify_label"):
+                self._status_notify_label.setText("⏹ Đã dừng tiến trình lồng tiếng.")
+                self._status_notify_box.setVisible(True)
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(0)
+            self._progress_label.setText("Tiến độ: Đã dừng")
             self._update_button_states()
 
     def on_btn_start_clicked(self) -> None:
@@ -2168,8 +2319,20 @@ class MainWindow(QMainWindow):
 
         if current_index == 2 and hasattr(self, 'studio_widget'):
             self.studio_widget.stop_dubbing_process()
+            if hasattr(self, "_status_notify_label"):
+                self._status_notify_label.setText("⏹ Đã dừng tác vụ Studio.")
+                self._status_notify_box.setVisible(True)
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(0)
+            self._progress_label.setText("Tiến độ: Đã dừng")
         else:
             self.stop_download()
+            if hasattr(self, "_status_notify_label"):
+                self._status_notify_label.setText("⏹ Đã dừng tiến trình tải.")
+                self._status_notify_box.setVisible(True)
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(0)
+            self._progress_label.setText("Tiến độ: Đã dừng")
 
     def _on_start_download(self) -> None:
         """Alias tương thích ngược."""
@@ -2205,6 +2368,11 @@ class MainWindow(QMainWindow):
             dub_voice=self.dub_voice,
             whisper_model=self.whisper_model,
             gemini_api_key=self.gemini_api_key,
+            auto_upload_tiktok=getattr(self, "auto_upload_tiktok", False),
+            tiktok_cookies_path=getattr(self, "tiktok_cookies_path", ""),
+            tiktok_privacy=getattr(self, "tiktok_privacy", "public"),
+            tiktok_delay_minutes=getattr(self, "tiktok_delay_minutes", 45),
+            tiktok_headless=getattr(self, "tiktok_headless", False),
             parent=self,
         )
         self._worker.status_updated.connect(self._on_status_updated)
@@ -2326,16 +2494,34 @@ class MainWindow(QMainWindow):
         self._is_dubbing = True
         self._append_log("LỒNG TIẾNG", f"Bắt đầu lồng tiếng: {Path(video_path).name}")
         self._status_bar.showMessage(f"Lồng tiếng AI: {Path(video_path).name}")
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_label.setText("Tiến độ: 0%  — Chuẩn bị lồng tiếng...")
+        if hasattr(self, "_status_notify_label"):
+            self._status_notify_label.setText(f"🎙 Bắt đầu lồng tiếng: {Path(video_path).name}")
+            self._status_notify_box.setVisible(True)
         self._update_button_states()
         self._dub_worker.start()
 
     def _on_dub_progress(self, current: int, total: int) -> None:
         pct = int(current / total * 100) if total > 0 else 0
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(pct)
+        self._progress_label.setText(f"Tiến độ: {pct}%  (Lồng tiếng câu {current}/{total})")
         self._status_bar.showMessage(f"Lồng tiếng AI: câu {current}/{total} ({pct}%)")
+        if hasattr(self, "_status_notify_label"):
+            self._status_notify_label.setText(f"🎙️ Đang lồng tiếng câu {current}/{total} ({pct}%)...")
+            self._status_notify_box.setVisible(True)
 
     def _on_dub_finished(self, output_path: str) -> None:
         file_name = Path(output_path).name if output_path else ""
         self._append_log("LỒNG TIẾNG", f"✅ Hoàn tất lồng tiếng! → {file_name}")
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(100)
+        self._progress_label.setText("Tiến độ: 100%  (Hoàn tất lồng tiếng)")
+        if hasattr(self, "_status_notify_label"):
+            self._status_notify_label.setText(f"🎉 Hoàn tất lồng tiếng video: {file_name}")
+            self._status_notify_box.setVisible(True)
 
         # 1. Tự động nạp video đã dịch vào Studio Widget
         if hasattr(self, "studio_widget") and output_path and os.path.isfile(output_path):
@@ -2355,6 +2541,43 @@ class MainWindow(QMainWindow):
                 self._append_log("LỒNG TIẾNG", f"🎬 Đã mở video: {file_name}")
             except Exception as e:
                 self._append_log("LỒNG TIẾNG", f"⚠ Không thể tự động mở video: {e}")
+
+        # 3. Tự động đăng TikTok nếu bật chế độ Auto TikTok
+        if getattr(self, "auto_upload_tiktok", False) and output_path and os.path.isfile(output_path):
+            self._append_log("TIKTOK AUTO", f"🎬 Bắt đầu quy trình tự động đăng TikTok cho: {file_name}")
+            try:
+                from core.tiktok_uploader import TikTokUploadWorker, generate_tiktok_caption
+                v_title = Path(output_path).stem
+                caption = generate_tiktok_caption(
+                    script_content=v_title,
+                    api_key=self.gemini_api_key,
+                    video_title=v_title,
+                )
+                self._append_log("TIKTOK AUTO", f"Tiêu đề tạo bởi AI: {caption}")
+                self._append_log("TIKTOK AUTO", f"Đang tự động upload lên kênh TikTok (Chế độ: {self.tiktok_privacy})...")
+
+                self._tt_standalone_worker = TikTokUploadWorker(
+                    video_path=output_path,
+                    caption=caption,
+                    cookies_path=self.tiktok_cookies_path,
+                    privacy=self.tiktok_privacy,
+                    headless=self.tiktok_headless,
+                    parent=self,
+                )
+                self._tt_standalone_worker.log_message.connect(lambda m: self._append_log("TIKTOK AUTO", m))
+
+                def _on_standalone_done(v, ok, msg):
+                    if ok:
+                        self._append_log("TIKTOK AUTO", f"✅ Đã đăng thành công video lên kênh TikTok: {Path(v).name}")
+                        if hasattr(self, "studio_widget") and hasattr(self.studio_widget, "on_tiktok_posted"):
+                            self.studio_widget.on_tiktok_posted()
+                    else:
+                        self._append_log("TIKTOK AUTO", f"⚠ Đăng TikTok thất bại: {msg}")
+
+                self._tt_standalone_worker.upload_finished.connect(_on_standalone_done)
+                self._tt_standalone_worker.start()
+            except Exception as tt_err:
+                self._append_log("TIKTOK AUTO", f"⚠ Lỗi khởi chạy đăng TikTok: {tt_err}")
 
         # 3. Hộp thoại thông báo hoàn tất với các nút thao tác tiện lợi
         msg_box = QMessageBox(self)
@@ -2411,10 +2634,14 @@ class MainWindow(QMainWindow):
         completed = self._success_count + self._fail_count
         overall = (completed / self._total_urls * 100.0) if self._total_urls > 0 else 0.0
         val = min(100, max(0, int(overall)))
+        self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(val)
         self._progress_label.setText(
             f"Tiến độ: {val}%  ({completed}/{self._total_urls} video) — {detail}"
         )
+        if hasattr(self, "_status_notify_label") and detail:
+            self._status_notify_label.setText(f"📥 Đang tải {completed}/{self._total_urls}: {detail}")
+            self._status_notify_box.setVisible(True)
         self._update_badges()
         self._status_bar.showMessage(
             f"Đang tải {completed}/{self._total_urls}... → {self.output_dir}"
@@ -2454,16 +2681,28 @@ class MainWindow(QMainWindow):
         if clean.startswith("["):
             end = clean.find("]")
             if end > 0:
-                self._append_log_raw(clean[:end + 1], platform, clean[end + 1:].strip())
+                tag = clean[:end + 1]
+                body = clean[end + 1:].strip()
+                self._append_log_raw(tag, platform, body)
+                if hasattr(self, "_status_notify_label"):
+                    self._status_notify_label.setText(message)
+                    self._status_notify_box.setVisible(True)
                 return
         self._append_log(platform, clean)
+        if hasattr(self, "_status_notify_label") and any(k in clean for k in ["Đang tải", "Hoàn tất", "Lỗi", "🚀", "🎉", "TIKTOK"]):
+            self._status_notify_label.setText(clean)
+            self._status_notify_box.setVisible(True)
 
     def _on_batch_finished(self, success_count: int, fail_count: int) -> None:
         self._success_count = success_count
         self._fail_count = fail_count
         self._active_count = 0
+        self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(100)
         self._progress_label.setText("Tiến độ: 100%")
+        if hasattr(self, "_status_notify_label"):
+            self._status_notify_label.setText(f"🎉 Hoàn tất danh sách! Đã tải: {success_count}, Thất bại: {fail_count}")
+            self._status_notify_box.setVisible(True)
         self._update_badges()
         if self._failed_urls:
             self._btn_export_errors.setEnabled(True)
@@ -2532,7 +2771,12 @@ class MainWindow(QMainWindow):
     def _refresh_statusbar(self) -> None:
         dir_disp = self.output_dir if self.output_dir else "Chưa chọn"
         dub_disp = "BẬT" if self.auto_dub else "TẮT"
-        self._sb_label.setText(f"📁 {dir_disp}  |  🎙 Lồng tiếng: {dub_disp}")
+        if getattr(self, "auto_upload_tiktok", False):
+            delay = getattr(self, "tiktok_delay_minutes", 45)
+            tt_disp = f"BẬT (Cách {delay}p)"
+        else:
+            tt_disp = "TẮT"
+        self._sb_label.setText(f"📁 Lưu tại: {dir_disp}  |  🎙 Lồng tiếng: {dub_disp}  |  📤 Auto TikTok: {tt_disp}")
 
     def update_action_buttons_state(self, index: Optional[int] = None) -> None:
         """Tự động đổi nhãn và trạng thái nút bấm theo màn hình đang mở."""

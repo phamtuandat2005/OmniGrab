@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 # pyrefly: ignore [missing-import]
-from PyQt6.QtCore import QTime, QUrl, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QTime, QUrl, Qt, QThread, pyqtSignal
 # pyrefly: ignore [missing-import]
 from PyQt6.QtGui import QColor, QFont, QIcon
 # pyrefly: ignore [missing-import]
@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -379,6 +380,92 @@ class StudioTranscribeWorker(QThread):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# CẦU NỐI TIẾN TRÌNH & THÔNG BÁO SANG PANEL PHẢI
+# ══════════════════════════════════════════════════════════════════════
+
+class _ForwardingStatusLabel(QObject):
+    """
+    Cầu nối thông báo: Chuyển tiếp toàn bộ chuỗi thông báo sang panel tiến trình bên phải
+    thông qua tín hiệu status_message (không vẽ trực tiếp trên UI Studio để mở rộng không gian).
+    """
+
+    def __init__(self, owner: Any) -> None:
+        super().__init__(owner)
+        self._owner = owner
+        self._text = ""
+        self._visible = False
+
+    def setText(self, text: str) -> None:
+        self._text = str(text or "")
+        self._visible = bool(self._text.strip())
+        if hasattr(self._owner, "status_message"):
+            self._owner.status_message.emit(self._text)
+
+    def text(self) -> str:
+        return self._text
+
+    def setVisible(self, visible: bool) -> None:
+        self._visible = visible
+        if hasattr(self._owner, "status_message"):
+            if not visible:
+                self._text = ""
+                self._owner.status_message.emit("")
+            elif self._text:
+                self._owner.status_message.emit(self._text)
+
+    def isVisible(self) -> bool:
+        return self._visible
+
+    def setStyleSheet(self, style: str) -> None:
+        pass
+
+
+class _ForwardingProgressBar(QObject):
+    """
+    Cầu nối tiến trình: Chuyển tiếp trạng thái tiến trình sang thanh tiến trình panel bên phải
+    thông qua tín hiệu progress_updated (không vẽ QProgressBar trên UI Studio).
+    """
+
+    def __init__(self, owner: Any) -> None:
+        super().__init__(owner)
+        self._owner = owner
+        self._min = 0
+        self._max = 100
+        self._val = 0
+        self._visible = False
+
+    def setRange(self, minimum: int, maximum: int) -> None:
+        self._min = minimum
+        self._max = maximum
+
+    def setFixedHeight(self, h: int) -> None:
+        pass
+
+    def setStyleSheet(self, style: str) -> None:
+        pass
+
+    def setValue(self, val: int) -> None:
+        self._val = val
+        if hasattr(self._owner, "progress_updated"):
+            self._owner.progress_updated.emit(val, "")
+
+    def value(self) -> int:
+        return self._val
+
+    def setVisible(self, visible: bool) -> None:
+        self._visible = visible
+        if hasattr(self._owner, "progress_updated"):
+            if visible:
+                val = -1 if (self._min == 0 and self._max == 0) else self._val
+                self._owner.progress_updated.emit(val, "")
+            else:
+                self._owner.progress_updated.emit(0, "")
+
+    def isVisible(self) -> bool:
+        return self._visible
+
+
+# ══════════════════════════════════════════════════════════════════════
 # GIAO DIỆN CHÍNH: DubbingStudioWidget
 # ══════════════════════════════════════════════════════════════════════
 
@@ -393,6 +480,9 @@ class DubbingStudioWidget(QWidget):
     export_dubbing_requested = pyqtSignal(str, list)   # (video_path, list_of_DubSegment)
     export_srt_requested = pyqtSignal(str, list)       # (video_path, list_of_DubSegment)
     video_loaded = pyqtSignal(str)                     # (video_path)
+    tiktok_upload_requested = pyqtSignal(str, str)     # (video_path, caption)
+    status_message = pyqtSignal(str)                   # Chuyển thông báo sang panel bên phải
+    progress_updated = pyqtSignal(int, str)            # Chuyển tiến trình sang panel bên phải
 
     # Các cột bảng kịch bản
     COL_TIME = 0
@@ -407,6 +497,8 @@ class DubbingStudioWidget(QWidget):
         self.segments: List[DubSegment] = []
         self._slider_dragging: bool = False
         self._transcribe_worker: Optional[StudioTranscribeWorker] = None
+        self._tiktok_worker: Optional[Any] = None
+        self._btn_upload_tiktok: Optional[QPushButton] = None
 
         self._build_ui()
         self._init_player()
@@ -621,30 +713,56 @@ class DubbingStudioWidget(QWidget):
         splitter.setSizes([260, 320])
         layout.addWidget(splitter, 1)
 
-        # Thanh tiến trình bóc tách nếu đang chạy AI
-        self._progress_bar = QProgressBar()
+        # Cầu nối chuyển tiếp tiến trình và thông báo sang Panel bên phải
+        # (Không thêm vào layout bên trái để giải phóng toàn bộ diện tích cho Studio)
+        self._progress_bar = _ForwardingProgressBar(self)
         self._progress_bar.setRange(0, 0)
-        self._progress_bar.setFixedHeight(6)
-        self._progress_bar.setVisible(False)
-        self._progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {c['border']};
-                border: none;
-                border-radius: 3px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {c['accent_purple']};
-                border-radius: 3px;
+        self._lbl_status_msg = _ForwardingStatusLabel(self)
+
+        # ── 3. Dòng soạn thảo Caption & Hashtag TikTok ──
+        caption_box = QFrame()
+        caption_box.setStyleSheet(f"""
+            QFrame {{
+                background-color: {c['bg_card']};
+                border: 1px solid {c['border']};
+                border-radius: 6px;
+                padding: 2px 8px;
             }}
         """)
-        layout.addWidget(self._progress_bar)
+        c_layout = QHBoxLayout(caption_box)
+        c_layout.setContentsMargins(6, 4, 6, 4)
+        c_layout.setSpacing(8)
 
-        self._lbl_status_msg = QLabel("")
-        self._lbl_status_msg.setStyleSheet(f"color: {c['accent_orange']}; font-size: 11px;")
-        self._lbl_status_msg.setVisible(False)
-        layout.addWidget(self._lbl_status_msg)
+        lbl_caption = QLabel("🎵 Caption TikTok:")
+        lbl_caption.setStyleSheet(f"color: {c['platform_tiktok']}; font-weight: 600; font-size: 12px;")
+        c_layout.addWidget(lbl_caption)
 
-        # ── 3. Thanh chân trang (Footer Bar) ──
+        self._txt_tiktok_caption = QLineEdit()
+        self._txt_tiktok_caption.setPlaceholderText("Nhập hoặc bấm '✨ Tạo Caption AI' để tự động tạo Caption giật tít + Hashtag...")
+        self._txt_tiktok_caption.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {c['bg_input']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QLineEdit:focus {{
+                border-color: {c['border_focus']};
+            }}
+        """)
+        c_layout.addWidget(self._txt_tiktok_caption, 1)
+
+        btn_ai_caption = QPushButton("✨ Tạo Caption AI")
+        btn_ai_caption.setToolTip("Dùng Gemini AI phân tích kịch bản trên bảng để tạo 1 câu Caption giật tít kèm Hashtag thịnh hành")
+        btn_ai_caption.setStyleSheet(self._btn_secondary_style())
+        btn_ai_caption.clicked.connect(self._on_generate_ai_caption)
+        c_layout.addWidget(btn_ai_caption)
+
+        layout.addWidget(caption_box)
+
+        # ── 4. Thanh chân trang (Footer Bar) ──
         footer_layout = QHBoxLayout()
         footer_layout.setContentsMargins(0, 4, 0, 0)
         footer_layout.setSpacing(10)
@@ -670,7 +788,7 @@ class DubbingStudioWidget(QWidget):
                 font-size: 13px;
                 border: 1px solid {c['btn_green_border']};
                 border-radius: 6px;
-                padding: 8px 18px;
+                padding: 8px 16px;
             }}
             QPushButton:hover {{
                 background-color: {c['btn_green_hover']};
@@ -678,6 +796,24 @@ class DubbingStudioWidget(QWidget):
         """)
         btn_export_dub.clicked.connect(self._on_export_dubbing)
         footer_layout.addWidget(btn_export_dub)
+
+        self._btn_upload_tiktok = QPushButton("📤  ĐĂNG NGAY LÊN TIKTOK")
+        self._btn_upload_tiktok.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['platform_tiktok']};
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 13px;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 18px;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+        """)
+        self._btn_upload_tiktok.clicked.connect(self._on_upload_now_tiktok)
+        footer_layout.addWidget(self._btn_upload_tiktok)
 
         layout.addLayout(footer_layout)
 
@@ -1207,10 +1343,132 @@ class DubbingStudioWidget(QWidget):
             self._progress_bar.setVisible(False)
             self._lbl_status_msg.setVisible(False)
 
+        if self._tiktok_worker and self._tiktok_worker.isRunning():
+            try:
+                self._tiktok_worker.terminate()
+                self._tiktok_worker.wait(1000)
+            except Exception:
+                pass
+            if self._btn_upload_tiktok:
+                self._btn_upload_tiktok.setEnabled(True)
+            self._progress_bar.setVisible(False)
+            self._lbl_status_msg.setVisible(False)
+
         main_win = self.window()
         if hasattr(main_win, "stop_dubbing"):
             main_win.stop_dubbing()
 
     def _on_back_clicked(self) -> None:
         self.back_requested.emit()
+
+    # ─────────────────────────────────────────────────────────────────
+    # TỰ ĐỘNG ĐĂNG VIDEO LÊN TIKTOK TỪ STUDIO
+    # ─────────────────────────────────────────────────────────────────
+
+    def on_tiktok_posted(self) -> None:
+        """Cập nhật trạng thái '🚀 Đã đăng TikTok' cho toàn bộ các dòng trong bảng."""
+        for row in range(self.table.rowCount()):
+            status_item = QTableWidgetItem("🚀 Đã đăng TikTok")
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, self.COL_STATUS, status_item)
+
+    def _on_generate_ai_caption(self) -> None:
+        """Dùng Gemini AI phân tích kịch bản trên bảng để tạo 1 câu Caption giật tít kèm Hashtag."""
+        segments = self.get_segments()
+        main_win = self.window()
+        api_key = getattr(main_win, "gemini_api_key", "")
+        v_title = Path(self.current_video_path).stem if self.current_video_path else ""
+
+        try:
+            from core.tiktok_uploader import generate_tiktok_caption
+            self._lbl_status_msg.setText("✨ Đang dùng Gemini phân tích kịch bản để tạo Caption TikTok...")
+            self._lbl_status_msg.setVisible(True)
+            caption = generate_tiktok_caption(
+                script_content=segments,
+                api_key=api_key,
+                video_title=v_title,
+            )
+            self._txt_tiktok_caption.setText(caption)
+            self._lbl_status_msg.setText(f"✅ Đã tạo Caption: {caption[:50]}...")
+        except Exception as e:
+            self._lbl_status_msg.setText(f"⚠ Lỗi tạo Caption: {e}")
+
+    def _on_upload_now_tiktok(self) -> None:
+        """Đăng ngay video đang mở trong Studio lên kênh TikTok."""
+        if not self.current_video_path or not os.path.isfile(self.current_video_path):
+            QMessageBox.warning(self, "Chưa chọn video", "Vui lòng mở một video MP4 trước khi đăng lên TikTok.")
+            return
+
+        main_win = self.window()
+        cookies_path = getattr(main_win, "tiktok_cookies_path", "")
+        if not cookies_path or not os.path.isfile(cookies_path):
+            f, _ = QFileDialog.getOpenFileName(
+                self,
+                "Chọn file Cookie TikTok (.txt)",
+                "",
+                "Cookie files (*.txt *.json);;Tất cả file (*.*)",
+            )
+            if f and os.path.isfile(f):
+                cookies_path = f
+                if hasattr(main_win, "tiktok_cookies_path"):
+                    main_win.tiktok_cookies_path = f
+                    if hasattr(main_win, "_save_settings"):
+                        main_win._save_settings()
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Chưa có Cookie",
+                    "Cần file Cookie TikTok để đăng nhập và đăng video tự động.\n"
+                    "Vui lòng vào Menu 'Tệp' ➔ 'Nạp file Cookie TikTok (.txt)...' trước."
+                )
+                return
+
+        caption = self._txt_tiktok_caption.text().strip()
+        if not caption:
+            self._on_generate_ai_caption()
+            caption = self._txt_tiktok_caption.text().strip()
+
+        privacy = getattr(main_win, "tiktok_privacy", "public")
+        headless = getattr(main_win, "tiktok_headless", False)
+
+        if self._btn_upload_tiktok:
+            self._btn_upload_tiktok.setEnabled(False)
+        self._progress_bar.setVisible(True)
+        self._lbl_status_msg.setVisible(True)
+        self._lbl_status_msg.setText("🚀 Đang khởi động trình duyệt đăng video lên TikTok...")
+
+        from core.tiktok_uploader import TikTokUploadWorker
+        self._tiktok_worker = TikTokUploadWorker(
+            video_path=self.current_video_path,
+            caption=caption,
+            cookies_path=cookies_path,
+            privacy=privacy,
+            headless=headless,
+            parent=self,
+        )
+        self._tiktok_worker.log_message.connect(self._lbl_status_msg.setText)
+        self._tiktok_worker.upload_finished.connect(self._on_tiktok_worker_finished)
+        self._tiktok_worker.start()
+
+    def _on_tiktok_worker_finished(self, video_path: str, success: bool, msg: str) -> None:
+        if self._btn_upload_tiktok:
+            self._btn_upload_tiktok.setEnabled(True)
+        self._progress_bar.setVisible(False)
+
+        if success:
+            self.on_tiktok_posted()
+            self._lbl_status_msg.setText("🎉 Đã đăng thành công video lên kênh TikTok!")
+            QMessageBox.information(
+                self,
+                "Đăng TikTok thành công",
+                f"🎉 Đã đăng thành công video lên kênh TikTok:\n{os.path.basename(video_path)}"
+            )
+        else:
+            self._lbl_status_msg.setText(f"❌ Lỗi đăng TikTok: {msg}")
+            QMessageBox.warning(
+                self,
+                "Lỗi đăng TikTok",
+                f"Không thể đăng video lên TikTok:\n{msg}"
+            )
 

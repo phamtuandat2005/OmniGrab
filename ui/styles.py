@@ -72,6 +72,7 @@ COLORS = {
 # === Platform tag colors ===
 PLATFORM_COLORS = {
     "TIKTOK": COLORS["platform_tiktok"],
+    "TIKTOK AUTO": COLORS["platform_tiktok"],
     "DOUYIN": COLORS["platform_douyin"],
     "FACEBOOK": COLORS["platform_facebook"],
     "YOUTUBE": COLORS["platform_youtube"],

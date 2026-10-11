@@ -58,26 +58,47 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
         IMAGE_ICON = 1
         LR_LOADFROMFILE = 0x00000010
         LR_DEFAULTSIZE = 0x00000040
+        GCLP_HICON = -14
+        GCLP_HICONSM = -34
 
-        LoadImage = ctypes.windll.user32.LoadImageW
+        user32 = ctypes.windll.user32
+
+        LoadImage = user32.LoadImageW
         LoadImage.argtypes = [
             wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
             ctypes.c_int, ctypes.c_int, wintypes.UINT
         ]
         LoadImage.restype = wintypes.HANDLE
 
-        # Nạp icon lớn (Taskbar / Alt+Tab 256x256) và icon nhỏ (Titlebar 32x32)
-        hicon_big = LoadImage(None, os.path.abspath(ico_path), IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+        SendMessage = user32.SendMessageW
+        SendMessage.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        SendMessage.restype = wintypes.LPARAM
+
+        SetClassLongPtr = getattr(user32, "SetClassLongPtrW", None) or getattr(user32, "SetClassLongW", None)
+        if SetClassLongPtr:
+            SetClassLongPtr.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LPARAM]
+            SetClassLongPtr.restype = wintypes.LPARAM
+
+        hwnd = wintypes.HWND(hwnd_id)
+        abs_path = os.path.abspath(ico_path)
+
+        # Nạp icon lớn (Taskbar / Alt+Tab) và icon nhỏ (Titlebar)
+        hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
         if not hicon_big:
-            hicon_big = LoadImage(None, os.path.abspath(ico_path), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+            hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
 
-        hicon_small = LoadImage(None, os.path.abspath(ico_path), IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+        hicon_small = LoadImage(None, abs_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+        if not hicon_small:
+            hicon_small = LoadImage(None, abs_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
 
-        SendMessage = ctypes.windll.user32.SendMessageW
         if hicon_big:
-            SendMessage(hwnd_id, WM_SETICON, ICON_BIG, hicon_big)
+            SendMessage(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+            if SetClassLongPtr:
+                SetClassLongPtr(hwnd, GCLP_HICON, hicon_big)
         if hicon_small:
-            SendMessage(hwnd_id, WM_SETICON, ICON_SMALL, hicon_small)
+            SendMessage(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+            if SetClassLongPtr:
+                SetClassLongPtr(hwnd, GCLP_HICONSM, hicon_small)
     except Exception:
         pass
 
@@ -88,7 +109,7 @@ def main() -> None:
     if sys.platform == "win32":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("OmniGrab.VideoDownloader.App.v4")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("OmniGrab.VideoDownloader.1.0")
         except Exception:
             pass
 
@@ -105,15 +126,13 @@ def main() -> None:
     # Thiết lập icon ứng dụng (tương thích Nuitka/PyInstaller)
     _icon_ico = os.path.normpath(get_resource_path("assets/icon.ico"))
     _icon_png = os.path.normpath(get_resource_path("assets/icon.png"))
+    _icon_path = _icon_ico if os.path.isfile(_icon_ico) else _icon_png
 
-    app_icon = QIcon()
-    if os.path.isfile(_icon_ico):
-        app_icon.addFile(_icon_ico)
-    if os.path.isfile(_icon_png):
-        app_icon.addFile(_icon_png)
-
-    if not app_icon.isNull():
+    if os.path.isfile(_icon_path):
+        app_icon = QIcon(_icon_path)
         app.setWindowIcon(app_icon)
+    else:
+        app_icon = QIcon()
 
     # Thiết lập font mặc định
     font = QFont("Segoe UI", 10)
@@ -129,8 +148,9 @@ def main() -> None:
         window.setWindowIcon(app_icon)
     window.show()
 
-    # Ép icon Windows Taskbar qua Win32 API sau khi show cửa sổ
-    _setup_windows_taskbar_icon(int(window.winId()), _icon_ico)
+    # Ép icon Windows Taskbar và Class Icon qua Win32 API sau khi show cửa sổ
+    if os.path.isfile(_icon_path):
+        _setup_windows_taskbar_icon(int(window.winId()), _icon_path)
 
     sys.exit(app.exec())
 

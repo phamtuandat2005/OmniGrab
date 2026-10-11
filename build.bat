@@ -66,7 +66,7 @@ goto MENU
 echo.
 echo Dang dong goi tieu chuan voi PyInstaller (--onefile)...
 pip install pyinstaller --quiet --upgrade
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "playwright" --collect-all "faster_whisper" --collect-all "ctranslate2" --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai!
     pause
@@ -81,24 +81,24 @@ exit /b 0
 
 :BUILD_NUITKA
 echo.
-echo [1/3] Kiem tra Nuitka...
-pip install nuitka --quiet
+echo [1/3] Kiem tra Nuitka & zstandard...
+pip install nuitka zstandard --quiet
 if errorlevel 1 (
     echo [LOI] Khong the cai dat Nuitka.
     pause
     exit /b 1
 )
-echo [2/3] Bat dau bien dich ma nguon Python sang C++ (Co the mat nhieu phut)...
-nuitka --standalone --onefile --enable-plugin=pyqt6 --include-package=yt_dlp --include-package=curl_cffi --include-package=f2 --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --include-data-files=ffmpeg.exe=ffmpeg.exe --include-data-files=ffprobe.exe=ffprobe.exe --remove-output --lto=no --windows-disable-console main.py
+echo [2/3] Bat dau bien dich ma nguon Python sang C++ (Co the mat 5-10 phut)...
+nuitka --standalone --onefile --enable-plugin=pyqt6 --enable-plugin=playwright --include-package=yt_dlp --include-package=curl_cffi --include-package=f2 --include-package=faster_whisper --include-package=ctranslate2 --include-package=playwright --include-package=pydub --include-package=gtts --include-package=requests --include-package=av --windows-icon-from-ico=assets\icon.ico --include-data-dir=assets=assets --include-data-dir=ui=ui --include-data-dir=core=core --include-data-files=ffmpeg.exe=ffmpeg.exe --include-data-files=ffprobe.exe=ffprobe.exe --windows-company-name="OmniGrab" --windows-product-name="OmniGrab" --windows-file-version=4.0.0.0 --windows-product-version=4.0.0.0 --windows-file-description="OmniGrab Video Downloader & AI Dubbing" --output-dir="dist" --output-filename="OmniGrab.exe" --remove-output --lto=no --windows-disable-console main.py
 if errorlevel 1 (
     echo.
-    echo [LOI] Bien dich that bai! Vui long kiem tra log C++ compiler.
-    echo Goi y: Ban co the can cai dat MinGW64 hoac MSVC (Visual Studio).
+    echo [LOI] Bien dich that bai! Vui long kiem tra log.
     pause
     exit /b 1
 )
+copy /y "dist\OmniGrab.exe" "OmniGrab.exe" >nul 2>&1
 echo.
-echo [3/3] Bien dich thanh cong! File thuc thi: main.exe
+echo [3/3] Bien dich C++ thanh cong! File thuc thi: dist\OmniGrab.exe (va OmniGrab.exe tai thu muc goc)
 pause
 exit /b 0
 

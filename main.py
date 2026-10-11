@@ -114,16 +114,40 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
             SetClassLongPtr.restype = wintypes.LPARAM
 
         hwnd = wintypes.HWND(hwnd_id)
-        abs_path = os.path.abspath(ico_path)
+        is_frozen = getattr(sys, "frozen", False)
 
-        # 1. Nạp icon lớn (Taskbar / Alt+Tab) và icon nhỏ (Titlebar)
-        hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
-        if not hicon_big:
-            hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+        hicon_big = None
+        hicon_small = None
 
-        hicon_small = LoadImage(None, abs_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
-        if not hicon_small:
-            hicon_small = LoadImage(None, abs_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        if is_frozen and sys.executable:
+            # Trong file .exe: Trích xuất trực tiếp icon nhúng từ PE header
+            try:
+                shell32 = ctypes.windll.shell32
+                h_big = wintypes.HICON()
+                h_small = wintypes.HICON()
+                n = shell32.ExtractIconExW(sys.executable, 0, ctypes.byref(h_big), ctypes.byref(h_small), 1)
+                if n > 0:
+                    hicon_big = h_big.value
+                    hicon_small = h_small.value
+            except Exception:
+                pass
+            relaunch_target = f"{sys.executable},0"
+        else:
+            abs_path = os.path.abspath(ico_path)
+            relaunch_target = f"{abs_path},0"
+
+        # Dự phòng nạp từ file .ico nếu trích xuất PE chưa có
+        if not hicon_big and os.path.isfile(ico_path):
+            abs_path = os.path.abspath(ico_path)
+            hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+            if not hicon_big:
+                hicon_big = LoadImage(None, abs_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+
+        if not hicon_small and os.path.isfile(ico_path):
+            abs_path = os.path.abspath(ico_path)
+            hicon_small = LoadImage(None, abs_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+            if not hicon_small:
+                hicon_small = LoadImage(None, abs_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
 
         if hicon_big:
             SendMessage(hwnd, WM_SETICON, ICON_BIG, hicon_big)
@@ -140,7 +164,7 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
             store = propsys.SHGetPropertyStoreForWindow(hwnd_id)
             if store:
                 store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType("OmniGrab.VideoDownloader.1.0"))
-                store.SetValue(pscon.PKEY_AppUserModel_RelaunchIconResource, propsys.PROPVARIANTType(f"{abs_path},0"))
+                store.SetValue(pscon.PKEY_AppUserModel_RelaunchIconResource, propsys.PROPVARIANTType(relaunch_target))
                 store.Commit()
         except Exception:
             pass

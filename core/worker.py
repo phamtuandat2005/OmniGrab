@@ -55,6 +55,9 @@ class DownloadWorker(QThread):
         dub_voice: str = "vi",
         whisper_model: str = "base",
         gemini_api_key: str = "",
+        bg_volume: float = 0.10,
+        voice_volume: float = 2.2,
+        mute_original: bool = False,
         auto_upload_tiktok: bool = False,
         tiktok_cookies_path: str = "",
         tiktok_privacy: str = "public",
@@ -88,6 +91,9 @@ class DownloadWorker(QThread):
         self.dub_voice = dub_voice
         self.whisper_model = whisper_model
         self.gemini_api_key = gemini_api_key
+        self.bg_volume = bg_volume
+        self.voice_volume = voice_volume
+        self.mute_original = mute_original
         self.auto_upload_tiktok = auto_upload_tiktok
         self.tiktok_cookies_path = tiktok_cookies_path
         self.tiktok_privacy = tiktok_privacy
@@ -177,6 +183,9 @@ class DownloadWorker(QThread):
                                         source_lang=self.dub_lang,
                                         voice=self.dub_voice,
                                         gemini_api_key=self.gemini_api_key,
+                                        bg_volume=self.bg_volume,
+                                        voice_volume=self.voice_volume,
+                                        mute_original=self.mute_original,
                                         progress_callback=self._log,
                                     )
                                     if ok and os.path.isfile(dubbed_path):

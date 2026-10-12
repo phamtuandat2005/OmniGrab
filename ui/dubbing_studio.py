@@ -28,6 +28,8 @@ from PyQt6.QtMultimediaWidgets import QVideoWidget
 # pyrefly: ignore [missing-import]
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -466,6 +468,252 @@ class _ForwardingProgressBar(QObject):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# HỘP THOẠI POPUP: CÀI ĐẶT TỶ LỆ HÒA ÂM (AUDIO MIXING)
+# ══════════════════════════════════════════════════════════════════════
+
+class AudioMixDialog(QDialog):
+    """
+    Hộp thoại popup tinh chỉnh tỷ lệ hòa âm (Voice Boost & Original Ducking):
+    - Âm lượng giọng đọc thuyết minh: 100% – 300% (Mặc định: 220% kèm chuẩn hóa EBU R128).
+    - Âm lượng video gốc / nhạc nền: 0% – 50% (Mặc định: 10%).
+    - Checkbox tắt hẳn âm thanh video gốc (0%).
+    """
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        voice_volume: int = 220,
+        bg_volume: int = 10,
+        mute_original: bool = False,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("🎚️ Cài đặt Tỷ lệ Hòa âm (Audio Mixing)")
+        self.setFixedSize(500, 310)
+        self.setModal(True)
+
+        self.voice_volume = max(100, min(300, int(voice_volume)))
+        self.bg_volume = max(0, min(50, int(bg_volume)))
+        self.mute_original = bool(mute_original)
+
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        c = COLORS
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {c['bg_primary']};
+                color: {c['text_primary']};
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
+
+        # Header
+        h_layout = QHBoxLayout()
+        lbl_icon = QLabel("🎚️")
+        lbl_icon.setStyleSheet("font-size: 20px;")
+        lbl_title = QLabel("Cài đặt Tỷ lệ Hòa âm Chuẩn Phòng Thu")
+        lbl_title.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {c['text_primary']};")
+        h_layout.addWidget(lbl_icon)
+        h_layout.addWidget(lbl_title)
+        h_layout.addStretch(1)
+        layout.addLayout(h_layout)
+
+        # Card chứa các thanh trượt
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {c['bg_card']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+                padding: 6px;
+            }}
+        """)
+        c_layout = QVBoxLayout(card)
+        c_layout.setContentsMargins(14, 12, 14, 12)
+        c_layout.setSpacing(10)
+
+        # 1. Âm lượng giọng đọc AI (100% - 300%)
+        row_voice = QHBoxLayout()
+        lbl_voice = QLabel("Âm lượng giọng đọc AI:")
+        lbl_voice.setStyleSheet(f"color: {c['text_primary']}; font-size: 12px; font-weight: 600; min-width: 145px;")
+
+        self._slider_voice = QSlider(Qt.Orientation.Horizontal)
+        self._slider_voice.setRange(100, 300)
+        self._slider_voice.setValue(self.voice_volume)
+        self._slider_voice.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                height: 5px;
+                background: #334155;
+                border-radius: 2px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {c['accent_green']};
+                border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                background: #ffffff;
+                width: 14px;
+                margin-top: -5px;
+                margin-bottom: -5px;
+                border-radius: 7px;
+            }}
+        """)
+        self._lbl_voice_val = QLabel(f"{self.voice_volume}%")
+        self._lbl_voice_val.setStyleSheet(f"color: {c['accent_green']}; font-weight: 700; font-size: 12px; min-width: 45px;")
+        self._slider_voice.valueChanged.connect(lambda v: self._lbl_voice_val.setText(f"{v}%"))
+
+        row_voice.addWidget(lbl_voice)
+        row_voice.addWidget(self._slider_voice, 1)
+        row_voice.addWidget(self._lbl_voice_val)
+        c_layout.addLayout(row_voice)
+
+        lbl_voice_hint = QLabel("💡 Khuyến nghị 220% (kèm lọc loudnorm EBU R128 để giọng to rõ, ấm áp)")
+        lbl_voice_hint.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px; padding-left: 150px;")
+        c_layout.addWidget(lbl_voice_hint)
+
+        # 2. Âm lượng video gốc (0% - 50%)
+        row_bg = QHBoxLayout()
+        lbl_bg = QLabel("Âm lượng video gốc:")
+        lbl_bg.setStyleSheet(f"color: {c['text_primary']}; font-size: 12px; font-weight: 600; min-width: 145px;")
+
+        self._slider_bg = QSlider(Qt.Orientation.Horizontal)
+        self._slider_bg.setRange(0, 50)
+        self._slider_bg.setValue(self.bg_volume)
+        self._slider_bg.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                height: 5px;
+                background: #334155;
+                border-radius: 2px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {c['accent_orange']};
+                border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                background: #ffffff;
+                width: 14px;
+                margin-top: -5px;
+                margin-bottom: -5px;
+                border-radius: 7px;
+            }}
+        """)
+        self._lbl_bg_val = QLabel("0% (Tắt)" if self.mute_original else f"{self.bg_volume}%")
+        self._lbl_bg_val.setStyleSheet(f"color: {c['accent_orange']}; font-weight: 700; font-size: 12px; min-width: 55px;")
+        self._slider_bg.valueChanged.connect(self._on_bg_slider_changed)
+
+        self._chk_mute = QCheckBox("Tắt hẳn")
+        self._chk_mute.setChecked(self.mute_original)
+        self._chk_mute.setToolTip("Tắt 100% âm thanh gốc, chỉ xuất hình ảnh và giọng thuyết minh")
+        self._chk_mute.setStyleSheet(f"color: {c['text_secondary']}; font-size: 11px;")
+        self._chk_mute.toggled.connect(self._on_mute_toggled)
+
+        row_bg.addWidget(lbl_bg)
+        row_bg.addWidget(self._slider_bg, 1)
+        row_bg.addWidget(self._lbl_bg_val)
+        row_bg.addWidget(self._chk_mute)
+        c_layout.addLayout(row_bg)
+
+        if self.mute_original:
+            self._slider_bg.setEnabled(False)
+
+        lbl_bg_hint = QLabel("💡 Khuyến nghị 10% để tiếng gốc/nhạc nền làm âm thanh nền êm dịu")
+        lbl_bg_hint.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px; padding-left: 150px;")
+        c_layout.addWidget(lbl_bg_hint)
+
+        layout.addWidget(card)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_default = QPushButton("🔄 Mặc định (220% / 10%)")
+        btn_default.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['bg_card']};
+                color: {c['text_secondary']};
+                border: 1px solid {c['border']};
+                border-radius: 5px;
+                padding: 6px 12px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {c['bg_secondary']};
+                color: {c['text_primary']};
+            }}
+        """)
+        btn_default.clicked.connect(self._reset_defaults)
+        btn_layout.addWidget(btn_default)
+        btn_layout.addStretch(1)
+
+        btn_cancel = QPushButton("Hủy")
+        btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['bg_card']};
+                color: {c['text_secondary']};
+                border: 1px solid {c['border']};
+                border-radius: 5px;
+                padding: 6px 14px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {c['bg_secondary']};
+                color: {c['text_primary']};
+            }}
+        """)
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        btn_save = QPushButton("✓ Áp dụng")
+        btn_save.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['accent_blue']};
+                color: #ffffff;
+                font-weight: 700;
+                border: none;
+                border-radius: 5px;
+                padding: 6px 18px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: #2563eb;
+            }}
+        """)
+        btn_save.clicked.connect(self._on_save)
+        btn_layout.addWidget(btn_save)
+
+        layout.addLayout(btn_layout)
+
+    def _on_bg_slider_changed(self, val: int) -> None:
+        if not self._chk_mute.isChecked():
+            self._lbl_bg_val.setText(f"{val}%")
+
+    def _on_mute_toggled(self, checked: bool) -> None:
+        c = COLORS
+        if checked:
+            self._slider_bg.setEnabled(False)
+            self._lbl_bg_val.setText("0% (Tắt)")
+            self._lbl_bg_val.setStyleSheet(f"color: {c['text_muted']}; font-weight: 700; font-size: 12px; min-width: 55px;")
+        else:
+            self._slider_bg.setEnabled(True)
+            self._lbl_bg_val.setText(f"{self._slider_bg.value()}%")
+            self._lbl_bg_val.setStyleSheet(f"color: {c['accent_orange']}; font-weight: 700; font-size: 12px; min-width: 55px;")
+
+    def _reset_defaults(self) -> None:
+        self._slider_voice.setValue(220)
+        self._slider_bg.setValue(10)
+        self._chk_mute.setChecked(False)
+
+    def _on_save(self) -> None:
+        self.voice_volume = self._slider_voice.value()
+        self.mute_original = self._chk_mute.isChecked()
+        self.bg_volume = 0 if self.mute_original else self._slider_bg.value()
+        self.accept()
+
+    def get_settings(self) -> tuple[int, int, bool]:
+        return self.voice_volume, self.bg_volume, self.mute_original
+
+
+# ══════════════════════════════════════════════════════════════════════
 # GIAO DIỆN CHÍNH: DubbingStudioWidget
 # ══════════════════════════════════════════════════════════════════════
 
@@ -483,6 +731,7 @@ class DubbingStudioWidget(QWidget):
     tiktok_upload_requested = pyqtSignal(str, str)     # (video_path, caption)
     status_message = pyqtSignal(str)                   # Chuyển thông báo sang panel bên phải
     progress_updated = pyqtSignal(int, str)            # Chuyển tiến trình sang panel bên phải
+    audio_mix_changed = pyqtSignal(int, int, bool)     # (voice_volume, bg_volume, mute_original)
 
     # Các cột bảng kịch bản
     COL_TIME = 0
@@ -499,6 +748,12 @@ class DubbingStudioWidget(QWidget):
         self._transcribe_worker: Optional[StudioTranscribeWorker] = None
         self._tiktok_worker: Optional[Any] = None
         self._btn_upload_tiktok: Optional[QPushButton] = None
+        self._btn_audio_mix: Optional[QPushButton] = None
+
+        # Cấu hình âm lượng hòa âm (mặc định chuẩn phòng thu)
+        self._voice_volume: int = 220
+        self._bg_volume: int = 10
+        self._mute_original: bool = False
 
         self._build_ui()
         self._init_player()
@@ -1303,6 +1558,45 @@ class DubbingStudioWidget(QWidget):
             QMessageBox.information(self, "Thành công", f"✅ Đã xuất file phụ đề SRT thành công:\n{f}")
         except Exception as e:
             QMessageBox.critical(self, "Lỗi xuất file", f"Không thể lưu file SRT:\n{e}")
+
+    def _update_mix_button_text(self) -> None:
+        """Cập nhật nhãn nút hòa âm tóm tắt cấu hình hiện tại."""
+        if not hasattr(self, "_btn_audio_mix") or self._btn_audio_mix is None:
+            return
+        if self._mute_original:
+            mix_info = f"{self._voice_volume}% / Tắt tiếng gốc"
+        else:
+            mix_info = f"{self._voice_volume}% / Gốc: {self._bg_volume}%"
+        self._btn_audio_mix.setText(f"🎚️  Hòa âm ({mix_info})")
+
+    def _on_open_audio_mix_dialog(self) -> None:
+        """Mở popup tùy chỉnh tỷ lệ hòa âm."""
+        dlg = AudioMixDialog(
+            parent=self,
+            voice_volume=self._voice_volume,
+            bg_volume=self._bg_volume,
+            mute_original=self._mute_original,
+        )
+        if dlg.exec():
+            self._voice_volume, self._bg_volume, self._mute_original = dlg.get_settings()
+            self._update_mix_button_text()
+            self.audio_mix_changed.emit(self._voice_volume, self._bg_volume, self._mute_original)
+
+    def set_audio_mix_settings(self, voice_volume: int, bg_volume: int, mute_original: bool) -> None:
+        """Cập nhật cài đặt hòa âm từ bên ngoài."""
+        self._voice_volume = max(100, min(300, int(voice_volume)))
+        self._bg_volume = max(0, min(50, int(bg_volume)))
+        self._mute_original = bool(mute_original)
+        self._update_mix_button_text()
+
+    def get_audio_mix_settings(self) -> tuple[float, float, bool]:
+        """
+        Trả về cấu hình hòa âm từ giao diện:
+        (voice_volume, bg_volume, mute_original)
+        """
+        voice_vol = self._voice_volume / 100.0
+        bg_vol = 0.0 if self._mute_original else (self._bg_volume / 100.0)
+        return voice_vol, bg_vol, self._mute_original
 
     def _on_export_dubbing(self) -> None:
         """Gửi yêu cầu xuất video lồng tiếng theo kịch bản đã duyệt."""

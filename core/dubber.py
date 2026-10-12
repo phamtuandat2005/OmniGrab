@@ -731,60 +731,35 @@ def render_cinema_dub_video(
     dub_track_wav: str,
     output_video: str,
     ffmpeg_bin: str,
-    bg_volume: float = 0.12,
+    bg_volume: float = 0.10,
+    voice_volume: float = 2.2,
+    mute_original: bool = False,
 ) -> bool:
     """
-    Hòa trộn âm thanh bằng FFmpeg Sidechain Compressor Ducking:
-    - Khi có tiếng thuyết minh tiếng Việt: tự động giảm nhạc nền gốc xuống 10% - 15% (mặc định 12%).
-    - Khi hết câu: tự động trả lại âm lượng nhạc nền nguyên bản êm dịu (release 350ms).
+    Hòa trộn âm thanh bằng FFmpeg chuẩn phòng thu qua mix_dubbed_audio:
+    - Kích âm giọng đọc thuyết minh tiếng Việt lên 220% kèm loudnorm (EBU R128).
+    - Giảm sâu tiếng gốc xuống 8% - 12% (mặc định 10%) hoặc tắt hẳn nếu mute_original=True.
+    - amix có normalize=0 để không bị suy hao âm lượng.
     - Giữ nguyên luồng hình ảnh gốc (-c:v copy).
     """
     # Chốt chặn nghiêm ngặt: Kiểm tra file âm thanh tiếng Việt trước khi render
     if not os.path.exists(dub_track_wav) or os.path.getsize(dub_track_wav) < 1000:
         raise Exception("LỖI THỰC TẾ: File âm thanh tiếng Việt bị rỗng. Không thể ghép vào video.")
 
-    # 1. Thử nghiệm bộ lọc Sidechain Ducking cao cấp
-    ducking_filter = (
-        f"[0:a][1:a]sidechaincompress="
-        f"threshold=0.08:ratio=6:attack=80:release=350[bg];"
-        f"[bg][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-    )
-
-    cmd = [
-        ffmpeg_bin,
-        "-y",
-        "-i", input_video,
-        "-i", dub_track_wav,
-        "-filter_complex", ducking_filter,
-        "-map", "0:v",
-        "-map", "[aout]",
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        output_video,
-    ]
-
-    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if res.returncode == 0 and os.path.exists(output_video) and os.path.getsize(output_video) > 1024:
-        return True
-
-    # 2. Fallback: Nếu video gốc không hỗ trợ sidechaincompress, dùng static ducking an toàn
-    fallback_filter = f"[0:a]volume={bg_volume:.2f}[bg];[1:a]volume=1.0[voice];[bg][voice]amix=inputs=2:duration=first[aout]"
-    cmd_fallback = [
-        ffmpeg_bin,
-        "-y",
-        "-i", input_video,
-        "-i", dub_track_wav,
-        "-filter_complex", fallback_filter,
-        "-map", "0:v",
-        "-map", "[aout]",
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        output_video,
-    ]
-    res_fb = subprocess.run(cmd_fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return res_fb.returncode == 0 and os.path.exists(output_video)
+    try:
+        from core.dubbing_engine import mix_dubbed_audio
+        mix_dubbed_audio(
+            video_input_path=input_video,
+            voice_audio_path=dub_track_wav,
+            output_path=output_video,
+            bg_volume=bg_volume,
+            voice_volume=voice_volume,
+            mute_original=mute_original,
+            ffmpeg_bin=ffmpeg_bin,
+        )
+        return os.path.exists(output_video) and os.path.getsize(output_video) > 1024
+    except Exception:
+        return False
 
 
 def format_seconds_to_srt(seconds: float) -> str:
@@ -890,7 +865,9 @@ class OmniDubber:
         source_lang: str = "zh",
         voice: str = "vi",
         gemini_api_key: str = "",
-        bg_volume: float = 0.12,
+        bg_volume: float = 0.10,
+        voice_volume: float = 2.2,
+        mute_original: bool = False,
         custom_segments: Optional[List[DubSegment]] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
         on_segment_discovered_cb: Optional[Callable[[dict], None]] = None,
@@ -1033,6 +1010,8 @@ class OmniDubber:
                 output_video=output_video,
                 ffmpeg_bin=self.ffmpeg,
                 bg_volume=bg_volume,
+                voice_volume=voice_volume,
+                mute_original=mute_original,
             )
 
             if success and os.path.isfile(output_video):
@@ -1063,7 +1042,9 @@ class DubConfig:
     """Cấu hình cho phiên lồng tiếng."""
     source_lang: str = "zh-CN"
     voice: str = "vi"
-    bg_volume: float = 0.12
+    bg_volume: float = 0.10
+    voice_volume: float = 2.2
+    mute_original: bool = False
     whisper_model: str = "base"
     gemini_api_key: str = ""
     ffmpeg_path: str = ""

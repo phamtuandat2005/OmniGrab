@@ -99,7 +99,9 @@ class DubbingDialog(QDialog):
         src_lang: str,
         voice: str,
         bg_volume: int,
-        whisper_model: str,
+        voice_volume: int = 220,
+        mute_original: bool = False,
+        whisper_model: str = "base",
         gemini_api_key: str = "",
         auto_open_dubbed: bool = True,
         parent: Optional[QWidget] = None,
@@ -115,10 +117,15 @@ class DubbingDialog(QDialog):
         self.result_src_lang = src_lang
         self.result_voice = voice
         self.result_bg_volume = bg_volume
+        self.result_voice_volume = voice_volume
+        self.result_mute_original = mute_original
         self.result_whisper_model = whisper_model
         self.result_gemini_api_key = gemini_api_key
 
-        self._build_ui(auto_dub, src_lang, voice, bg_volume, whisper_model, gemini_api_key, auto_open_dubbed)
+        self._build_ui(
+            auto_dub, src_lang, voice, bg_volume, voice_volume, mute_original,
+            whisper_model, gemini_api_key, auto_open_dubbed
+        )
 
     # ─────────────── Build UI ───────────────
 
@@ -128,6 +135,8 @@ class DubbingDialog(QDialog):
         src_lang: str,
         voice: str,
         bg_volume: int,
+        voice_volume: int,
+        mute_original: bool,
         whisper_model: str,
         gemini_api_key: str = "",
         auto_open_dubbed: bool = True,
@@ -259,28 +268,56 @@ class DubbingDialog(QDialog):
             self._combo_model.setCurrentIndex(idx_m)
         grid.addWidget(self._combo_model, 2, 1)
 
-        # Âm lượng nhạc nền
-        grid.addWidget(self._lbl("Âm lượng nhạc nền (Ducking):"), 3, 0)
-        vol_row = QHBoxLayout()
+        # Âm lượng giọng đọc AI
+        grid.addWidget(self._lbl("Âm lượng giọng đọc:"), 3, 0)
+        v_vol_row = QHBoxLayout()
+        self._slider_voice_vol = QSlider(Qt.Orientation.Horizontal)
+        self._slider_voice_vol.setRange(100, 300)
+        self._slider_voice_vol.setValue(voice_volume)
+        self._slider_voice_vol.setToolTip("100% = gốc | 220% = chuẩn phòng thu kèm loudnorm | 300% = tối đa")
+        self._lbl_voice_vol = QLabel(f"{voice_volume}%")
+        self._lbl_voice_vol.setStyleSheet(
+            f"color:{c['accent_green']}; font-weight:700; min-width:40px;"
+        )
+        self._slider_voice_vol.valueChanged.connect(
+            lambda v: self._lbl_voice_vol.setText(f"{v}%")
+        )
+        v_vol_row.addWidget(self._slider_voice_vol)
+        v_vol_row.addWidget(self._lbl_voice_vol)
+        v_vol_w = QWidget()
+        v_vol_w.setLayout(v_vol_row)
+        grid.addWidget(v_vol_w, 3, 1)
+
+        # Âm lượng video gốc / Nhạc nền
+        grid.addWidget(self._lbl("Âm lượng video gốc:"), 4, 0)
+        bg_vol_row = QHBoxLayout()
         self._slider_vol = QSlider(Qt.Orientation.Horizontal)
-        self._slider_vol.setRange(0, 30)
+        self._slider_vol.setRange(0, 50)
         self._slider_vol.setValue(bg_volume)
-        self._slider_vol.setToolTip("0% = tắt nhạc nền | 12% = mặc định | 30% = nền rõ")
-        self._lbl_vol = QLabel(f"{bg_volume}%")
+        self._slider_vol.setToolTip("0% = tắt tiếng gốc | 10% = chuẩn nền êm dịu | 50% = tiếng gốc to")
+        self._lbl_vol = QLabel("0% (Đã tắt)" if mute_original else f"{bg_volume}%")
         self._lbl_vol.setStyleSheet(
-            f"color:{c['accent_blue']}; font-weight:700; min-width:40px;"
+            f"color:{c['accent_orange']}; font-weight:700; min-width:50px;"
         )
-        self._slider_vol.valueChanged.connect(
-            lambda v: self._lbl_vol.setText(f"{v}%")
-        )
-        vol_row.addWidget(self._slider_vol)
-        vol_row.addWidget(self._lbl_vol)
-        vol_w = QWidget()
-        vol_w.setLayout(vol_row)
-        grid.addWidget(vol_w, 3, 1)
+        self._slider_vol.valueChanged.connect(self._on_slider_bg_changed)
+        bg_vol_row.addWidget(self._slider_vol)
+        bg_vol_row.addWidget(self._lbl_vol)
+
+        self._chk_mute_orig = QCheckBox("Tắt hẳn tiếng gốc")
+        self._chk_mute_orig.setChecked(mute_original)
+        self._chk_mute_orig.setToolTip("Khi tích chọn, âm lượng video gốc sẽ về 0% (chỉ giữ hình ảnh và giọng thuyết minh)")
+        self._chk_mute_orig.toggled.connect(self._on_mute_toggled)
+        bg_vol_row.addWidget(self._chk_mute_orig)
+
+        if mute_original:
+            self._slider_vol.setEnabled(False)
+
+        bg_vol_w = QWidget()
+        bg_vol_w.setLayout(bg_vol_row)
+        grid.addWidget(bg_vol_w, 4, 1)
 
         # Gemini API Key
-        grid.addWidget(self._lbl("Gemini API Key (Miễn phí):"), 4, 0)
+        grid.addWidget(self._lbl("Gemini API Key (Miễn phí):"), 5, 0)
         key_box = QVBoxLayout()
         key_box.setSpacing(4)
 
@@ -427,12 +464,26 @@ class DubbingDialog(QDialog):
         except Exception:
             self._lbl_dep_status.setText("⚠ Không kiểm tra được thư viện")
 
+    def _on_slider_bg_changed(self, v: int) -> None:
+        if not self._chk_mute_orig.isChecked():
+            self._lbl_vol.setText(f"{v}%")
+
+    def _on_mute_toggled(self, checked: bool) -> None:
+        if checked:
+            self._slider_vol.setEnabled(False)
+            self._lbl_vol.setText("0% (Đã tắt)")
+        else:
+            self._slider_vol.setEnabled(True)
+            self._lbl_vol.setText(f"{self._slider_vol.value()}%")
+
     def _save_and_accept(self) -> None:
         self.result_auto_dub = self._chk_auto.isChecked()
         self.result_auto_open_dubbed = self._chk_auto_open.isChecked()
         self.result_src_lang = self._combo_lang.currentData() or "zh-CN"
         self.result_voice = self._combo_voice.currentData() or "vi"
-        self.result_bg_volume = self._slider_vol.value()
+        self.result_voice_volume = self._slider_voice_vol.value()
+        self.result_mute_original = self._chk_mute_orig.isChecked()
+        self.result_bg_volume = 0 if self._chk_mute_orig.isChecked() else self._slider_vol.value()
         self.result_whisper_model = self._combo_model.currentData() or "base"
         self.result_gemini_api_key = self._txt_key.text().strip()
         self.accept()
@@ -479,7 +530,9 @@ class MainWindow(QMainWindow):
         self.auto_dub: bool = False
         self.dub_lang: str = "zh-CN"
         self.dub_voice: str = "vi"
-        self.bg_volume: int = 12              # % (0-30)
+        self.bg_volume: int = 10              # % (0-50, mặc định 10)
+        self.voice_volume: int = 220          # % (100-300, mặc định 220)
+        self.mute_original: bool = False
         self.whisper_model: str = "base"
         self.gemini_api_key: str = ""
         self.max_workers: int = 3
@@ -550,12 +603,25 @@ class MainWindow(QMainWindow):
         saved_voice = str(data.get("dub_voice") or qs.value("dub_voice", "vi", type=str) or "vi")
         self.dub_voice = "vi" if ("hoaimy" in saved_voice.lower() or "neural" in saved_voice.lower()) else saved_voice
 
-        # 4. Âm lượng Ducking
-        raw_vol = data.get("bg_volume") if "bg_volume" in data else qs.value("bg_volume", 12, type=int)
+        # 4. Âm lượng video gốc / Ducking
+        raw_vol = data.get("bg_volume") if "bg_volume" in data else qs.value("bg_volume", 10, type=int)
         try:
-            self.bg_volume = max(0, min(30, int(raw_vol)))
+            self.bg_volume = max(0, min(50, int(raw_vol)))
         except (ValueError, TypeError):
-            self.bg_volume = 12
+            self.bg_volume = 10
+
+        # Âm lượng giọng đọc (100% - 300%, mặc định 220%)
+        raw_voice_vol = data.get("voice_volume") if "voice_volume" in data else qs.value("voice_volume", 220, type=int)
+        try:
+            self.voice_volume = max(100, min(300, int(raw_voice_vol)))
+        except (ValueError, TypeError):
+            self.voice_volume = 220
+
+        # Tắt hẳn âm thanh gốc
+        if "mute_original" in data:
+            self.mute_original = bool(data["mute_original"])
+        else:
+            self.mute_original = qs.value("mute_original", False, type=bool)
 
         # 5. Whisper Model
         self.whisper_model = str(data.get("whisper_model") or qs.value("whisper_model", "base", type=str) or "base")
@@ -664,6 +730,8 @@ class MainWindow(QMainWindow):
             "dub_lang": self.dub_lang,
             "dub_voice": self.dub_voice,
             "bg_volume": self.bg_volume,
+            "voice_volume": getattr(self, "voice_volume", 220),
+            "mute_original": getattr(self, "mute_original", False),
             "whisper_model": self.whisper_model,
             "gemini_api_key": self.gemini_api_key,
             "output_dir": self.output_dir,
@@ -872,19 +940,21 @@ class MainWindow(QMainWindow):
         act_studio.triggered.connect(lambda: self._switch_page(self.PAGE_STUDIO))
         menu_mode.addAction(act_studio)
 
-        menu_mode.addSeparator()
+        # ── 3. Công cụ ──
+        menu_tools = bar.addMenu("Công cụ")
 
         act_threads = QAction("⚙  Cài đặt số luồng tải đồng thời...", self)
         act_threads.triggered.connect(self._on_set_threads)
-        menu_mode.addAction(act_threads)
-
-        # ── 3. Công cụ ──
-        menu_tools = bar.addMenu("Công cụ")
+        menu_tools.addAction(act_threads)
 
         act_dub_settings = QAction("🎙  Cài đặt Lồng tiếng AI...", self)
         act_dub_settings.setShortcut(QKeySequence("Ctrl+L"))
         act_dub_settings.triggered.connect(self._on_open_dub_dialog)
         menu_tools.addAction(act_dub_settings)
+
+        act_mix_settings = QAction("🎚  Cài đặt Tỷ lệ Hòa âm (Voice & Nhạc nền)...", self)
+        act_mix_settings.triggered.connect(self._on_open_audio_mix_dialog)
+        menu_tools.addAction(act_mix_settings)
 
         act_tiktok_settings = QAction("📤  Cài đặt Tự động Đăng TikTok...", self)
         act_tiktok_settings.triggered.connect(self._on_open_tiktok_dialog)
@@ -945,6 +1015,12 @@ class MainWindow(QMainWindow):
         self.studio_widget.video_loaded.connect(self._on_studio_video_loaded)
         self.studio_widget.status_message.connect(self._on_studio_status_message)
         self.studio_widget.progress_updated.connect(self._on_studio_progress_updated)
+        self.studio_widget.audio_mix_changed.connect(self._on_studio_audio_mix_changed)
+        self.studio_widget.set_audio_mix_settings(
+            getattr(self, "voice_volume", 220),
+            getattr(self, "bg_volume", 10),
+            getattr(self, "mute_original", False),
+        )
 
         # ── Cột phải: Tiến trình & Log ──
         right = self._build_right_panel()
@@ -1682,6 +1758,8 @@ class MainWindow(QMainWindow):
             src_lang=self.dub_lang,
             voice=self.dub_voice,
             bg_volume=self.bg_volume,
+            voice_volume=getattr(self, "voice_volume", 220),
+            mute_original=getattr(self, "mute_original", False),
             whisper_model=self.whisper_model,
             gemini_api_key=self.gemini_api_key,
             auto_open_dubbed=self.auto_open_dubbed,
@@ -1693,13 +1771,47 @@ class MainWindow(QMainWindow):
             self.dub_lang = dlg.result_src_lang
             self.dub_voice = dlg.result_voice
             self.bg_volume = dlg.result_bg_volume
+            self.voice_volume = dlg.result_voice_volume
+            self.mute_original = dlg.result_mute_original
             self.whisper_model = dlg.result_whisper_model
             self.gemini_api_key = dlg.result_gemini_api_key
+            if hasattr(self, "studio_widget") and hasattr(self.studio_widget, "set_audio_mix_settings"):
+                self.studio_widget.set_audio_mix_settings(self.voice_volume, self.bg_volume, self.mute_original)
             self._save_settings()
             self._refresh_statusbar()
             status = "BẬT" if self.auto_dub else "TẮT"
+            mute_str = " (Tắt tiếng gốc)" if self.mute_original else f" (Tiếng gốc: {self.bg_volume}%, Giọng đọc: {self.voice_volume}%)"
             api_info = "Gemini API: Đã có key" if self.gemini_api_key else "Gemini API: Chưa có key"
-            self._append_log("LỒNG TIẾNG", f"Cài đặt đã lưu — Tự động lồng tiếng: {status} | {api_info}")
+            self._append_log("LỒNG TIẾNG", f"Cài đặt đã lưu — Tự động lồng tiếng: {status}{mute_str} | {api_info}")
+
+    def _on_open_audio_mix_dialog(self) -> None:
+        """Mở popup tùy chỉnh tỷ lệ hòa âm từ Menu Công cụ."""
+        from ui.dubbing_studio import AudioMixDialog
+        dlg = AudioMixDialog(
+            parent=self,
+            voice_volume=getattr(self, "voice_volume", 220),
+            bg_volume=getattr(self, "bg_volume", 10),
+            mute_original=getattr(self, "mute_original", False),
+        )
+        if dlg.exec():
+            v_vol, bg_vol, mute_orig = dlg.get_settings()
+            self.voice_volume = v_vol
+            self.bg_volume = bg_vol
+            self.mute_original = mute_orig
+            if hasattr(self, "studio_widget") and hasattr(self.studio_widget, "set_audio_mix_settings"):
+                self.studio_widget.set_audio_mix_settings(v_vol, bg_vol, mute_orig)
+            self._save_settings()
+            mute_str = " (Đã tắt tiếng gốc)" if mute_orig else f" (Gốc: {bg_vol}%, Giọng đọc: {v_vol}%)"
+            self._append_log("LỒNG TIẾNG", f"Đã cập nhật tỷ lệ hòa âm: Giọng đọc {v_vol}%, Tiếng gốc {bg_vol}%{mute_str}")
+
+    def _on_studio_audio_mix_changed(self, v_vol: int, bg_vol: int, mute_orig: bool) -> None:
+        """Đồng bộ cài đặt hòa âm từ Studio sang cấu hình MainWindow."""
+        self.voice_volume = v_vol
+        self.bg_volume = bg_vol
+        self.mute_original = mute_orig
+        self._save_settings()
+        mute_str = " (Đã tắt tiếng gốc)" if mute_orig else f" (Gốc: {bg_vol}%, Giọng đọc: {v_vol}%)"
+        self._append_log("LỒNG TIẾNG", f"Studio cập nhật hòa âm: Giọng đọc {v_vol}%, Tiếng gốc {bg_vol}%{mute_str}")
 
     def _on_choose_tiktok_cookie(self) -> None:
         f, _ = QFileDialog.getOpenFileName(
@@ -1757,7 +1869,16 @@ class MainWindow(QMainWindow):
         if self._is_dubbing:
             QMessageBox.warning(self, "Đang xử lý", "Hiện đang có tiến trình lồng tiếng đang chạy!")
             return
-        self._start_dubbing(video_path, custom_segments=custom_segments)
+        voice_vol, bg_vol, mute_orig = None, None, None
+        if hasattr(self, 'studio_widget') and hasattr(self.studio_widget, 'get_audio_mix_settings'):
+            voice_vol, bg_vol, mute_orig = self.studio_widget.get_audio_mix_settings()
+        self._start_dubbing(
+            video_path,
+            custom_segments=custom_segments,
+            voice_volume=voice_vol,
+            bg_volume=bg_vol,
+            mute_original=mute_orig,
+        )
 
     def _on_studio_status_message(self, msg: str) -> None:
         """Nhận thông báo trạng thái từ Studio và hiển thị tập trung tại panel bên phải."""
@@ -2368,6 +2489,9 @@ class MainWindow(QMainWindow):
             dub_voice=self.dub_voice,
             whisper_model=self.whisper_model,
             gemini_api_key=self.gemini_api_key,
+            bg_volume=self.bg_volume / 100.0,
+            voice_volume=getattr(self, "voice_volume", 220) / 100.0,
+            mute_original=getattr(self, "mute_original", False),
             auto_upload_tiktok=getattr(self, "auto_upload_tiktok", False),
             tiktok_cookies_path=getattr(self, "tiktok_cookies_path", ""),
             tiktok_privacy=getattr(self, "tiktok_privacy", "public"),
@@ -2435,16 +2559,33 @@ class MainWindow(QMainWindow):
     # MODULE LỒNG TIẾNG AI
     # ══════════════════════════════════════════════════════════════════
 
-    def _get_dub_config(self) -> DubConfig:
+    def _get_dub_config(
+        self,
+        voice_volume: Optional[float] = None,
+        bg_volume: Optional[float] = None,
+        mute_original: Optional[bool] = None,
+    ) -> DubConfig:
+        v_vol = voice_volume if voice_volume is not None else getattr(self, "voice_volume", 220) / 100.0
+        b_vol = bg_volume if bg_volume is not None else getattr(self, "bg_volume", 10) / 100.0
+        m_orig = mute_original if mute_original is not None else getattr(self, "mute_original", False)
         return DubConfig(
             source_lang=self.dub_lang,
             voice=self.dub_voice,
-            bg_volume=self.bg_volume / 100.0,
+            bg_volume=b_vol,
+            voice_volume=v_vol,
+            mute_original=m_orig,
             whisper_model=self.whisper_model,
             gemini_api_key=self.gemini_api_key,
         )
 
-    def _start_dubbing(self, video_path: str, custom_segments: Optional[List[DubSegment]] = None) -> None:
+    def _start_dubbing(
+        self,
+        video_path: str,
+        custom_segments: Optional[List[DubSegment]] = None,
+        voice_volume: Optional[float] = None,
+        bg_volume: Optional[float] = None,
+        mute_original: Optional[bool] = None,
+    ) -> None:
         if self._is_dubbing:
             self._append_log("LỒNG TIẾNG", f"Bỏ qua {Path(video_path).name} — đang bận lồng tiếng.")
             return
@@ -2467,7 +2608,7 @@ class MainWindow(QMainWindow):
                 self._append_log("LỒNG TIẾNG", "Chưa cấu hình Gemini API Key. Đã hủy tiến trình lồng tiếng.")
                 return
 
-        config = self._get_dub_config()
+        config = self._get_dub_config(voice_volume, bg_volume, mute_original)
         config.custom_segments = custom_segments
         self._dub_worker = DubWorker(
             input_video=video_path, config=config, parent=self

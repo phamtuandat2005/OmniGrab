@@ -222,11 +222,14 @@ def dismiss_tiktok_modals(page: Any, log_fn: Optional[Callable[[str], None]] = N
 
     # 2. Danh sách các nút ưu tiên đóng/xác nhận trong modal (cả tiếng Việt và tiếng Anh)
     dismiss_selectors = [
+        'div[data-floating-ui-portal] button:has-text("Post now")',
+        'div[data-floating-ui-portal] button:has-text("Đăng ngay")',
+        'button:has-text("Post now")',
+        'button:has-text("Đăng ngay")',
         'div[data-floating-ui-portal] button:has-text("Turn on")',
         'div[data-floating-ui-portal] button:has-text("Bật")',
         'div[data-floating-ui-portal] button:has-text("Vẫn đăng")',
         'div[data-floating-ui-portal] button:has-text("Post anyway")',
-        'div[data-floating-ui-portal] button:has-text("Đăng ngay")',
         'div[data-floating-ui-portal] button:has-text("Publish anyway")',
         'div[data-floating-ui-portal] button:has-text("Đã hiểu")',
         'div[data-floating-ui-portal] button:has-text("Got it")',
@@ -634,47 +637,61 @@ class TikTokUploader:
 
                 page.wait_for_timeout(1500)
 
-                # 8. XỬ LÝ MODAL "Turn on automatic content checks?" (Bắt buộc cho tài khoản mới / kênh mới)
-                try:
-                    turn_on_btn = page.locator('button:has-text("Turn on"), button:has-text("Bật")')
-                    if turn_on_btn.count() > 0 and turn_on_btn.first.is_visible():
-                        self._log("[TIKTOK AUTO] 🛡 Phát hiện bảng 'Turn on automatic content checks?', đang tự động click Turn on...")
-                        turn_on_btn.first.click()
-                        page.wait_for_timeout(1500)
-                except Exception as e:
-                    self._log(f"[TIKTOK AUTO] ℹ Bỏ qua kiểm tra turn on: {e}")
-
-                # Xử lý các nút popup phụ khác nếu có (Got it, Đã hiểu, v.v.)
-                try:
-                    got_it_btn = page.locator('button:has-text("Got it"), button:has-text("Đã hiểu")')
-                    if got_it_btn.count() > 0 and got_it_btn.first.is_visible():
-                        self._log("[TIKTOK AUTO] ⚡ Đã tự động đóng tooltip Got it / Đã hiểu.")
-                        got_it_btn.first.click()
-                        page.wait_for_timeout(1000)
-                except Exception:
-                    pass
-
-                # Xử lý các nút xác nhận phụ khác (Vẫn đăng / Post anyway / Confirm)
-                for confirm_sel in [
-                    'button:has-text("Vẫn đăng")',
-                    'button:has-text("Post anyway")',
-                    'button:has-text("Đăng ngay")',
-                    'button:has-text("Publish anyway")',
-                    'button:has-text("Confirm")',
-                    'button:has-text("Xác nhận")',
-                ]:
+                # 8. VÒNG LẶP XỬ LÝ TẤT CẢ CÁC MODAL XÁC NHẬN CỦA TIKTOK SAU KHI BẤM ĐĂNG (TRONG ~10 GIÂY)
+                self._log("[TIKTOK AUTO] 🛡 Đang kiểm tra và tự động xử lý các popup xác nhận của TikTok sau khi bấm Đăng...")
+                for _ in range(8):
+                    # 1. Xử lý popup: "Continue to post?" -> Bấm "Post now" / "Đăng ngay"
                     try:
-                        c_btn = page.locator(confirm_sel).first
-                        if c_btn.is_visible(timeout=1000):
-                            self._log(f"[TIKTOK AUTO] ⚡ Xác nhận hộp thoại: '{c_btn.text_content().strip()}'")
-                            try:
-                                c_btn.click(timeout=2000)
-                            except Exception:
-                                c_btn.evaluate("el => el.click()")
-                            page.wait_for_timeout(1000)
-                            break
+                        post_now_btn = page.locator('button:has-text("Post now"), button:has-text("Đăng ngay")')
+                        if post_now_btn.count() > 0 and post_now_btn.first.is_visible():
+                            self._log("[TIKTOK AUTO] ⚠️ Phát hiện bảng 'Continue to post?', đang tự động click 'Post now'...")
+                            post_now_btn.first.click()
+                            page.wait_for_timeout(1500)
                     except Exception:
                         pass
+
+                    # 2. Xử lý popup: "Turn on automatic content checks?" -> Bấm "Turn on" / "Bật"
+                    try:
+                        turn_on_btn = page.locator('button:has-text("Turn on"), button:has-text("Bật")')
+                        if turn_on_btn.count() > 0 and turn_on_btn.first.is_visible():
+                            self._log("[TIKTOK AUTO] 🛡 Phát hiện bảng 'Turn on automatic content checks?', đang click 'Turn on'...")
+                            turn_on_btn.first.click()
+                            page.wait_for_timeout(1500)
+                    except Exception:
+                        pass
+
+                    # 3. Xử lý tooltip: "Got it" / "Đã hiểu"
+                    try:
+                        got_it_btn = page.locator('button:has-text("Got it"), button:has-text("Đã hiểu")')
+                        if got_it_btn.count() > 0 and got_it_btn.first.is_visible():
+                            self._log("[TIKTOK AUTO] ⚡ Đã tự động đóng tooltip Got it / Đã hiểu.")
+                            got_it_btn.first.click()
+                            page.wait_for_timeout(500)
+                    except Exception:
+                        pass
+
+                    # 4. Xử lý các nút xác nhận phụ khác (Vẫn đăng / Post anyway / Publish anyway / Confirm / Xác nhận)
+                    try:
+                        for confirm_sel in [
+                            'button:has-text("Vẫn đăng")',
+                            'button:has-text("Post anyway")',
+                            'button:has-text("Publish anyway")',
+                            'button:has-text("Confirm")',
+                            'button:has-text("Xác nhận")',
+                        ]:
+                            c_btn = page.locator(confirm_sel).first
+                            if c_btn.count() > 0 and c_btn.is_visible():
+                                self._log(f"[TIKTOK AUTO] ⚡ Xác nhận hộp thoại: '{c_btn.text_content().strip()}'")
+                                c_btn.click(timeout=1500)
+                                page.wait_for_timeout(1000)
+                                break
+                    except Exception:
+                        pass
+
+                    # Nếu URL đã chuyển sang trang content hoặc có thông báo thành công thì thoát sớm
+                    if "content" in page.url.lower():
+                        break
+                    page.wait_for_timeout(1000)
 
                 # 9. CHỜ THÔNG BÁO XÁC NHẬN ĐĂNG THÀNH CÔNG TỪ TIKTOK (TỐI ĐA 35s)
                 self._log("[TIKTOK AUTO] ⏳ Đang chờ xác nhận đăng thành công từ TikTok (tối đa 35s)...")
@@ -716,19 +733,20 @@ class TikTokUploader:
                     if success_confirmed:
                         break
 
-                    # Xử lý modal phát sinh sau khi bấm đăng (Turn on, Got it, Vẫn đăng)
+                    # Xử lý modal phát sinh sau khi bấm đăng (Post now, Turn on, Got it, Vẫn đăng)
                     try:
                         for c_sel in [
+                            'button:has-text("Post now")',
+                            'button:has-text("Đăng ngay")',
                             'button:has-text("Turn on")',
                             'button:has-text("Bật")',
                             'button:has-text("Got it")',
                             'button:has-text("Đã hiểu")',
                             'button:has-text("Vẫn đăng")',
                             'button:has-text("Post anyway")',
-                            'button:has-text("Đăng ngay")',
                         ]:
                             cb = page.locator(c_sel).first
-                            if cb.is_visible(timeout=200):
+                            if cb.count() > 0 and cb.is_visible(timeout=200):
                                 self._log(f"[TIKTOK AUTO] 🛡 Đã tự động click xác nhận: '{cb.text_content().strip()}'")
                                 cb.click(timeout=1000)
                                 page.wait_for_timeout(500)

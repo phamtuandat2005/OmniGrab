@@ -72,7 +72,18 @@ goto MENU
 echo.
 echo Dang dong goi tieu chuan voi PyInstaller (--onefile)...
 pip install pyinstaller --quiet --upgrade
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon="%~dp0assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "playwright" --collect-all "faster_whisper" --collect-all "ctranslate2" --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --collect-all "deep_translator" --collect-all "cryptography" --collect-all "bs4" --collect-all "av" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" --hidden-import "requests" main.py
+
+set FFMPEG_PYI_FLAGS=
+if exist "ffmpeg.exe" (
+    set FFMPEG_PYI_FLAGS=--add-binary "ffmpeg.exe;."
+) else (
+    echo [THONG BAO] Khong tim thay ffmpeg.exe trong thu muc goc. Se bo qua nhung binary ffmpeg.
+)
+if exist "ffprobe.exe" (
+    set FFMPEG_PYI_FLAGS=%FFMPEG_PYI_FLAGS% --add-binary "ffprobe.exe;."
+)
+
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon="%~dp0assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" %FFMPEG_PYI_FLAGS% --collect-all "playwright" --collect-all "faster_whisper" --collect-all "ctranslate2" --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --collect-all "deep_translator" --collect-all "cryptography" --collect-all "bs4" --collect-all "av" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" --hidden-import "requests" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai!
     pause
@@ -82,7 +93,6 @@ if errorlevel 1 (
 ie4uinit.exe -show >nul 2>&1
 echo.
 echo DONG GOI THANH CONG! File thuc thi: dist\OmniGrab.exe
-echo (Da tich hop san ffmpeg vao ben trong file exe)
 pause
 exit /b 0
 
@@ -96,8 +106,19 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+set FFMPEG_NUITKA_FLAGS=
+if exist "ffmpeg.exe" (
+    set FFMPEG_NUITKA_FLAGS=--include-data-files=ffmpeg.exe=ffmpeg.exe
+) else (
+    echo [THONG BAO] Khong tim thay ffmpeg.exe trong thu muc goc.
+)
+if exist "ffprobe.exe" (
+    set FFMPEG_NUITKA_FLAGS=%FFMPEG_NUITKA_FLAGS% --include-data-files=ffprobe.exe=ffprobe.exe
+)
+
 echo [2/3] Bat dau bien dich ma nguon Python sang C++ (Co the mat 5-10 phut)...
-nuitka --standalone --onefile --enable-plugin=pyqt6 --enable-plugin=playwright --include-package=yt_dlp --include-package=curl_cffi --include-package=f2 --include-package=faster_whisper --include-package=ctranslate2 --include-package=playwright --include-package=pydub --include-package=gtts --include-package=requests --include-package=av --windows-icon-from-ico="%~dp0assets\icon.ico" --include-data-dir=assets=assets --include-data-dir=ui=ui --include-data-dir=core=core --include-data-files=ffmpeg.exe=ffmpeg.exe --include-data-files=ffprobe.exe=ffprobe.exe --windows-company-name="OmniGrab" --windows-product-name="OmniGrab" --windows-file-version=4.0.0.0 --windows-product-version=4.0.0.0 --windows-file-description="OmniGrab Video Downloader & AI Dubbing" --output-dir="dist" --output-filename="OmniGrab.exe" --remove-output --lto=no --windows-disable-console main.py
+nuitka --standalone --onefile --enable-plugin=pyqt6 --enable-plugin=playwright --include-package=yt_dlp --include-package=curl_cffi --include-package=f2 --include-package=faster_whisper --include-package=ctranslate2 --include-package=playwright --include-package=pydub --include-package=gtts --include-package=requests --include-package=av --include-package-data=f2 --include-package-data=curl_cffi --windows-icon-from-ico="%~dp0assets\icon.ico" --include-data-dir=assets=assets --include-data-dir=ui=ui --include-data-dir=core=core %FFMPEG_NUITKA_FLAGS% --windows-company-name="OmniGrab" --windows-product-name="OmniGrab" --windows-file-version=4.0.0.0 --windows-product-version=4.0.0.0 --windows-file-description="OmniGrab Video Downloader & AI Dubbing" --output-dir="dist" --output-filename="OmniGrab.exe" --remove-output --lto=no --windows-disable-console main.py
 if errorlevel 1 (
     echo.
     echo [LOI] Bien dich that bai! Vui long kiem tra log.
@@ -128,9 +149,17 @@ pyarmor gen -O dist_obfuscated -r core main.py
 xcopy /s /i /y ui dist_obfuscated\ui >nul
 xcopy /s /i /y assets dist_obfuscated\assets >nul
 
+set FFMPEG_PYARMOR_FLAGS=
+if exist "ffmpeg.exe" (
+    set FFMPEG_PYARMOR_FLAGS=--add-binary "..\ffmpeg.exe;."
+)
+if exist "ffprobe.exe" (
+    set FFMPEG_PYARMOR_FLAGS=%FFMPEG_PYARMOR_FLAGS% --add-binary "..\ffprobe.exe;."
+)
+
 echo [3/3] Dang dong goi code da ma hoa bang PyInstaller...
 cd dist_obfuscated
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" --add-binary "..\ffmpeg.exe;." --add-binary "..\ffprobe.exe;." --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab_Protected" --icon "assets\icon.ico" --add-data "ui;ui" --add-data "assets;assets" %FFMPEG_PYARMOR_FLAGS% --collect-all "playwright" --collect-all "faster_whisper" --collect-all "ctranslate2" --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --collect-all "deep_translator" --collect-all "cryptography" --collect-all "bs4" --collect-all "av" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" --hidden-import "requests" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai.
     pause

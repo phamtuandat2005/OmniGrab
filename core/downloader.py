@@ -43,23 +43,46 @@ def _detect_ffmpeg() -> str:
     Tự động phát hiện đường dẫn ffmpeg.
 
     Tìm kiếm theo thứ tự:
-    1. Thư mục ứng dụng hiện tại (cho bản đóng gói Nuitka/PyInstaller).
-    2. Biến môi trường PATH.
+    1. Thư mục ứng dụng hiện tại và thư mục gốc dự án.
+    2. Các thư mục tools hoặc bin đi kèm.
+    3. imageio_ffmpeg (nếu có trong môi trường python).
+    4. Biến môi trường PATH.
 
     Returns:
         Đường dẫn thư mục chứa ffmpeg, hoặc chuỗi rỗng nếu không tìm thấy.
     """
     from core.security import get_base_path
 
-    # Kiểm tra trong thư mục ứng dụng và thư mục cha
     app_dir = get_base_path()
     parent_dir = os.path.dirname(app_dir)
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    proj_dir = os.path.dirname(module_dir)
 
-    for search_dir in [app_dir, parent_dir]:
-        ffmpeg_exe = os.path.join(search_dir, "ffmpeg.exe")
-        ffmpeg_bin = os.path.join(search_dir, "ffmpeg")
-        if os.path.isfile(ffmpeg_exe) or os.path.isfile(ffmpeg_bin):
-            return search_dir
+    search_dirs = [
+        app_dir,
+        parent_dir,
+        proj_dir,
+        os.path.join(proj_dir, "tools", "ffmpeg", "bin"),
+        os.path.join(proj_dir, "tools", "ffmpeg"),
+        os.path.join(proj_dir, "tools"),
+        os.path.join(app_dir, "tools", "ffmpeg", "bin"),
+    ]
+
+    for search_dir in search_dirs:
+        if os.path.isdir(search_dir):
+            ffmpeg_exe = os.path.join(search_dir, "ffmpeg.exe")
+            ffmpeg_bin = os.path.join(search_dir, "ffmpeg")
+            if os.path.isfile(ffmpeg_exe) or os.path.isfile(ffmpeg_bin):
+                return search_dir
+
+    # Kiểm tra trong imageio_ffmpeg nếu được cài đặt
+    try:
+        import imageio_ffmpeg
+        img_ff = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.isfile(img_ff):
+            return os.path.dirname(img_ff)
+    except Exception:
+        pass
 
     # Kiểm tra trong PATH
     ffmpeg_in_path = shutil.which("ffmpeg")
@@ -345,9 +368,13 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
 
     # 2. Lấy thông tin chi tiết qua API Douyin (ABogusManager + x-tt-argus)
     try:
+        import core.f2_patch
         from core.channel_scrapers import parse_cookie_file
+        # pyrefly: ignore [missing-import]
         from f2.apps.douyin.utils import ABogusManager, TokenManager
+        # pyrefly: ignore [missing-import]
         from f2.apps.douyin.model import PostDetail
+        # pyrefly: ignore [missing-import]
         from f2.apps.douyin.api import DouyinAPIEndpoints
 
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
@@ -372,6 +399,7 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
 
         session = None
         try:
+            # pyrefly: ignore [missing-import]
             from curl_cffi import requests as cffi_requests
             session = cffi_requests.Session(impersonate="chrome120")
         except Exception:
@@ -529,24 +557,68 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
                     config.progress_hook({"status": "finished", "filename": out_file})
                 return result
 
-        # Tải luồng video MP4 trực tiếp
-        with _requests.get(target_video_url, stream=True, timeout=30, headers={"User-Agent": ua, "Referer": "https://www.douyin.com/"}) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get("content-length", 0))
-            downloaded = 0
-            with open(out_file, "wb") as f:
-                for chunk in r.iter_content(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if config.progress_hook and total_size > 0:
-                            pct = f"{(downloaded / total_size) * 100:.1f}%"
-                            config.progress_hook({
-                                "status": "downloading",
-                                "_percent_str": pct,
-                                "_speed_str": "CDN",
-                                "filename": out_file,
-                            })
+        # Tải luồng video MP4 trực tiếp qua file tạm (.part) để tránh hỏng file nếu bị ngắt quãng
+        candidate_urls: list[str] = []
+        for u in raw_urls:
+            if "playwm" in u:
+                candidate_urls.append(u.replace("playwm", "play"))
+            candidate_urls.append(u)
+
+        part_file = out_file + ".part"
+        download_success = False
+
+        for t_url in candidate_urls:
+            try:
+                with _requests.get(
+                    t_url,
+                    stream=True,
+                    timeout=35,
+                    headers={"User-Agent": ua, "Referer": "https://www.douyin.com/"},
+                ) as r:
+                    r.raise_for_status()
+                    total_size = int(r.headers.get("content-length", 0))
+                    downloaded = 0
+                    with open(part_file, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if config.progress_hook and total_size > 0:
+                                    pct = f"{(downloaded / total_size) * 100:.1f}%"
+                                    config.progress_hook({
+                                        "status": "downloading",
+                                        "_percent_str": pct,
+                                        "_speed_str": "CDN",
+                                        "filename": out_file,
+                                    })
+                    # Kiểm tra dữ liệu tải về đủ dung lượng
+                    if total_size > 0 and downloaded < (total_size * 0.95):
+                        if os.path.isfile(part_file):
+                            try:
+                                os.remove(part_file)
+                            except Exception:
+                                pass
+                        continue
+                    if os.path.isfile(part_file) and os.path.getsize(part_file) > 1024:
+                        if os.path.isfile(out_file):
+                            try:
+                                os.remove(out_file)
+                            except Exception:
+                                pass
+                        os.replace(part_file, out_file)
+                        download_success = True
+                        break
+            except Exception:
+                if os.path.isfile(part_file):
+                    try:
+                        os.remove(part_file)
+                    except Exception:
+                        pass
+                continue
+
+        if not download_success:
+            result["error"] = "Không thể tải luồng video Douyin từ CDN (kết nối bị gián đoạn hoặc link hết hạn)."
+            return result
 
         # Nếu audio_only và đã tải MP4: convert sang mp3
         if config.audio_only and out_file.endswith(".mp4"):
@@ -744,6 +816,16 @@ def scan_channel_videos(
 
     # Mặc định dùng yt-dlp
     import yt_dlp
+    ua = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        if "tiktok.com" in u_lower
+        else (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    )
     opts: dict[str, Any] = {
         "extract_flat": "in_playlist",
         "playlistend": max_videos,
@@ -752,6 +834,9 @@ def scan_channel_videos(
         "no_color": True,
         "ignoreerrors": True,
         "socket_timeout": 30,
+        "http_headers": {
+            "User-Agent": ua,
+        },
     }
     if cookie_file and os.path.isfile(cookie_file):
         opts["cookiefile"] = cookie_file

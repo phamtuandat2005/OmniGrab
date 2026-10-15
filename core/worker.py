@@ -573,14 +573,55 @@ class ScanChannelWorker(QThread):
             if duration_sec is None and isinstance(duration_val, (int, float)):
                 duration_sec = int(duration_val)
 
-            views = entry.get("views_raw") if entry.get("views_raw") is not None else (entry.get("view_count") or entry.get("views") or 0)
-            likes = entry.get("likes_raw") if entry.get("likes_raw") is not None else (entry.get("like_count") or entry.get("likes") or 0)
-            upload_date_raw = str(entry.get("upload_date_raw") or entry.get("upload_date") or "")
+            # Lượt xem: nếu nền tảng không cung cấp trong feed nhanh (None), hiển thị "--" thay vì ép về 0
+            raw_v = entry.get("views_raw") if entry.get("views_raw") is not None else entry.get("view_count")
+            if raw_v is None and isinstance(entry.get("views"), (int, float)):
+                raw_v = entry.get("views")
 
-            # Format chuỗi hiển thị nếu chưa được format
+            if isinstance(entry.get("views"), str) and any(c in str(entry.get("views")) for c in ["K", "M", "--", "Ẩn"]):
+                views_str = str(entry.get("views"))
+                views_raw = int(raw_v) if raw_v is not None and str(raw_v).isdigit() else 0
+            elif raw_v is not None:
+                try:
+                    views_raw = int(raw_v)
+                    views_str = self._fmt_number(views_raw)
+                except Exception:
+                    views_raw = 0
+                    views_str = "--"
+            else:
+                views_raw = 0
+                views_str = "--"
+
+            # Lượt thích: nếu không có dữ liệu, hiển thị "--"
+            raw_l = entry.get("likes_raw") if entry.get("likes_raw") is not None else entry.get("like_count")
+            if raw_l is None and isinstance(entry.get("likes"), (int, float)):
+                raw_l = entry.get("likes")
+
+            if isinstance(entry.get("likes"), str) and any(c in str(entry.get("likes")) for c in ["K", "M", "--"]):
+                likes_str = str(entry.get("likes"))
+                likes_raw = int(raw_l) if raw_l is not None and str(raw_l).isdigit() else 0
+            elif raw_l is not None:
+                try:
+                    likes_raw = int(raw_l)
+                    likes_str = self._fmt_number(likes_raw)
+                except Exception:
+                    likes_raw = 0
+                    likes_str = "--"
+            else:
+                likes_raw = 0
+                likes_str = "--"
+
+            upload_date_raw = str(entry.get("upload_date_raw") or entry.get("upload_date") or "")
+            if (not upload_date_raw or upload_date_raw == "None") and entry.get("timestamp"):
+                from datetime import datetime as _dt
+                try:
+                    ts = int(entry["timestamp"])
+                    upload_date_raw = _dt.fromtimestamp(ts).strftime("%Y%m%d")
+                except Exception:
+                    pass
+
+            # Format chuỗi hiển thị thời lượng và ngày đăng
             duration_str = entry.get("duration") if isinstance(entry.get("duration"), str) and ":" in str(entry.get("duration")) else self._fmt_duration(duration_sec)
-            views_str = entry.get("views") if isinstance(entry.get("views"), str) and any(c in str(entry.get("views")) for c in ["K", "M", "--"]) else self._fmt_number(views)
-            likes_str = entry.get("likes") if isinstance(entry.get("likes"), str) and any(c in str(entry.get("likes")) for c in ["K", "M", "--"]) else self._fmt_number(likes)
             date_str = entry.get("upload_date") if isinstance(entry.get("upload_date"), str) and "/" in str(entry.get("upload_date")) else self._fmt_upload_date(upload_date_raw)
 
             video_data = {
@@ -588,9 +629,9 @@ class ScanChannelWorker(QThread):
                 "duration": duration_str,
                 "duration_sec": int(duration_sec) if duration_sec else 0,
                 "views": views_str,
-                "views_raw": int(views) if str(views).isdigit() else 0,
+                "views_raw": views_raw,
                 "likes": likes_str,
-                "likes_raw": int(likes) if str(likes).isdigit() else 0,
+                "likes_raw": likes_raw,
                 "upload_date": date_str,
                 "upload_date_raw": upload_date_raw,
                 "url": video_url,
@@ -667,6 +708,20 @@ class ScanChannelWorker(QThread):
             if found:
                 ffmpeg_dir = os.path.dirname(found)
 
+        url_lower = (self._channel_url or "").lower()
+        if "tiktok.com" in url_lower:
+            # Mobile Safari UA giúp vượt qua WAF (SlardarWAF) của TikTok khi quét kênh
+            ua = (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            )
+        else:
+            ua = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+
         ydl_opts: dict = {
             "extract_flat": "in_playlist",
             "playlistend": self._max_videos,
@@ -676,11 +731,7 @@ class ScanChannelWorker(QThread):
             "ignoreerrors": True,
             "socket_timeout": 30,
             "http_headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
+                "User-Agent": ua,
             },
         }
 
@@ -695,11 +746,10 @@ class ScanChannelWorker(QThread):
                 info = ydl.extract_info(self._channel_url, download=False)
 
                 if info is None:
-                    url_lower = self._channel_url.lower()
                     if ("tiktok.com" in url_lower or "douyin.com" in url_lower or "facebook.com" in url_lower or "fb.com" in url_lower) and not self._cookie_file:
                         self.scan_error.emit(
                             "Kênh bị chặn do chưa có Cookie xác thực. "
-                            "TikTok yêu cầu phiên đăng nhập để duyệt danh sách video."
+                            "Hãy cung cấp file cookie đăng nhập để duyệt toàn bộ kênh."
                         )
                     else:
                         self.scan_error.emit(
@@ -725,7 +775,6 @@ class ScanChannelWorker(QThread):
                 "private" in err_lower
                 or "login" in err_lower
                 or "sign in" in err_lower
-                or "secondary user id" in err_lower
                 or "blocked" in err_lower
                 or "10204" in err_lower
             ):

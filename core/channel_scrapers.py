@@ -154,10 +154,14 @@ def scan_douyin_channel(
 
     _log("🔍 [Douyin] Đang phân tích liên kết kênh...")
 
-    # 1. Kiểm tra các module cần thiết từ f2
+    # 1. Kiểm tra các module cần thiết từ f2 (và tự động vá cấu hình conf.yaml nếu thiếu)
     try:
+        import core.f2_patch  # Tự động khắc phục lỗi thiếu conf.yaml khi đóng gói Nuitka/PyInstaller
+        # pyrefly: ignore [missing-import]
         from f2.apps.douyin.utils import ABogusManager, TokenManager
+        # pyrefly: ignore [missing-import]
         from f2.apps.douyin.model import UserPost
+        # pyrefly: ignore [missing-import]
         from f2.apps.douyin.api import DouyinAPIEndpoints
     except ImportError:
         raise RuntimeError(
@@ -236,6 +240,7 @@ def scan_douyin_channel(
     # 4. Chuẩn bị HTTP Session (ưu tiên curl_cffi giả lập Chrome TLS Fingerprint)
     session = None
     try:
+        # pyrefly: ignore [missing-import]
         from curl_cffi import requests as cffi_requests
         session = cffi_requests.Session(impersonate="chrome120")
     except Exception:
@@ -390,13 +395,22 @@ def scan_douyin_channel_f2(
 # ═════════════════════════════════════════════════════════════════════
 
 def is_facebook_single_video(url: str) -> bool:
-    """Kiểm tra xem link Facebook có phải là video / reel / watch đơn lẻ hay không."""
+    """
+    Kiểm tra xem link Facebook có phải là video / reel / watch đơn lẻ hay không.
+    Tránh nhận định nhầm trang danh sách (Page Reels / Page Videos) thành video đơn.
+    """
     u = url.lower()
+
+    # Nếu URL là trang danh mục /reels hoặc /videos của kênh/fanpage thì là KÊNH, KHÔNG PHẢI VIDEO ĐƠN
+    clean = re.sub(r"[?#].*$", "", u).rstrip("/")
+    if clean.endswith("/videos") or clean.endswith("/reels"):
+        return False
+
     return (
-        "/watch" in u
-        or "/reel/" in u
-        or "/reels/" in u
-        or "fb.watch" in u
+        bool(re.search(r"/watch[/?].*v=\d+", u))
+        or bool(re.search(r"/reel/\d+", u))
+        or bool(re.search(r"/reels/\d+", u))
+        or "fb.watch/" in u
         or bool(re.search(r"/videos/\d+", u))
         or bool(re.search(r"[?&]v=\d+", u))
         or "/share/r/" in u
@@ -622,7 +636,9 @@ def scan_facebook_channel(
 
     # ── Chiến lược 1: curl_cffi giả lập Chrome 120 (vượt TLS chặn của Meta) ──
     try:
+        # pyrefly: ignore [missing-import]
         from curl_cffi import requests as cffi_requests
+        # pyrefly: ignore [missing-import]
         import json
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -678,6 +694,7 @@ def scan_facebook_channel(
     if len(collected_vids) < max_videos and cookie_dict:
         try:
             import requests
+            # pyrefly: ignore [missing-import]
             from bs4 import BeautifulSoup
             mbasic_url = target_url.replace("https://www.facebook.com", "https://mbasic.facebook.com")
             m_headers = {

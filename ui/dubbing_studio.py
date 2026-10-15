@@ -18,9 +18,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 # pyrefly: ignore [missing-import]
-from PyQt6.QtCore import QObject, QSize, QTime, QUrl, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QLoggingCategory, QObject, QSize, QTime, QUrl, Qt, QThread, pyqtSignal
 # pyrefly: ignore [missing-import]
 from PyQt6.QtGui import QColor, QFont, QIcon
+
+try:
+    QLoggingCategory.setFilterRules("qt.multimedia*=false\nqt.multimedia.ffmpeg*=false")
+except Exception:
+    pass
 
 
 def _resolve_icon_path(rel_path: str) -> str:
@@ -1179,6 +1184,32 @@ class DubbingStudioWidget(QWidget):
     def load_video_to_studio(self, video_path: str, preserve_table: bool = False) -> None:
         """Nạp video lên khung phát QVideoWidget và đồng bộ kịch bản."""
         if not video_path or not os.path.isfile(video_path):
+            return
+
+        # Kiểm tra file có đủ kích thước tối thiểu không
+        if os.path.getsize(video_path) < 1024:
+            if hasattr(self, "_lbl_status_msg") and self._lbl_status_msg:
+                self._lbl_status_msg.setText("⚠ File video rỗng hoặc chưa hoàn tất, không thể nạp.")
+                self._lbl_status_msg.setVisible(True)
+            return
+
+        # Kiểm tra tính toàn vẹn của container để tránh lỗi codec h264/aac hỏng slice
+        try:
+            import av
+            with av.open(video_path) as _chk_c:
+                if not _chk_c.streams.video and not _chk_c.streams.audio:
+                    if hasattr(self, "_lbl_status_msg") and self._lbl_status_msg:
+                        self._lbl_status_msg.setText("⚠ File không chứa luồng video/audio hợp lệ.")
+                        self._lbl_status_msg.setVisible(True)
+                    return
+                # Thử giải mã 1 frame để kiểm tra NAL/PPS
+                if _chk_c.streams.video:
+                    for _ in _chk_c.decode(video=0):
+                        break
+        except Exception:
+            if hasattr(self, "_lbl_status_msg") and self._lbl_status_msg:
+                self._lbl_status_msg.setText("⚠ File video bị lỗi cấu trúc dữ liệu hoặc tải chưa xong.")
+                self._lbl_status_msg.setVisible(True)
             return
 
         old_path = self.current_video_path

@@ -23,9 +23,18 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# Vá tương thích PyAV 19+ cho faster-whisper
+# Tắt log cảnh báo cấp độ thấp của Qt Multimedia / FFmpeg để tránh tràn console
+os.environ.setdefault("QT_LOGGING_RULES", "qt.multimedia*=false;qt.multimedia.ffmpeg*=false")
+
+# Vá tương thích PyAV 19+ cho faster-whisper và tắt log cảnh báo rác
 try:
+    # pyrefly: ignore [missing-import]
     import av
+    try:
+        av.logging.set_level(av.logging.ERROR)
+    except Exception:
+        pass
+    # pyrefly: ignore [missing-assign]
     _orig_av_open = av.open
 
     def _safe_av_open(*args, **kwargs):
@@ -35,6 +44,9 @@ try:
     av.open = _safe_av_open
 except Exception:
     pass
+
+# Vá tương thích cho f2 khi đóng gói (tránh thiếu conf.yaml)
+import core.f2_patch
 
 # pyrefly: ignore [missing-import]
 from PyQt6.QtWidgets import QApplication

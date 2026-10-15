@@ -3067,7 +3067,7 @@ class MainWindow(QMainWindow):
         # Nếu mở lại ở Studio và có video đã lưu trước đó, tự động nạp lại video
         if target_page == self.PAGE_STUDIO and hasattr(self, "studio_widget"):
             saved_vid = getattr(self, "studio_last_video", "")
-            if saved_vid and os.path.isfile(saved_vid):
+            if saved_vid and os.path.isfile(saved_vid) and os.path.getsize(saved_vid) > 1024:
                 try:
                     self.studio_widget.load_video(saved_vid)
                     self._append_log("STUDIO", f"Đã khôi phục video: {os.path.basename(saved_vid)}")

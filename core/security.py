@@ -13,10 +13,13 @@ def get_base_path() -> str:
     khi đóng gói bằng PyInstaller (_MEIPASS) và khi đóng gói Nuitka.
     """
     if getattr(sys, 'frozen', False):
-        # PyInstaller tạo ra _MEIPASS, Nuitka có thể không có nhưng getattr(sys, 'frozen') = True
+        # PyInstaller tạo ra _MEIPASS
         if hasattr(sys, '_MEIPASS'):
             return sys._MEIPASS
-        # Nuitka standalone onefile thường bung ra temp dir giống PyInstaller hoặc chạy trực tiếp thư mục
+        # Nuitka onefile bung các file tài nguyên ra thư mục tạm NUITKA_ONEFILE_DIRECTORY
+        if 'NUITKA_ONEFILE_DIRECTORY' in os.environ and os.path.isdir(os.environ['NUITKA_ONEFILE_DIRECTORY']):
+            return os.environ['NUITKA_ONEFILE_DIRECTORY']
+        # Nuitka standalone hoặc chạy trực tiếp thư mục
         return os.path.dirname(sys.executable)
     # Chạy từ script Python bình thường
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -23,9 +23,14 @@ from dataclasses import dataclass
 
 import requests
 
-# Vá tương thích PyAV 19+ cho faster-whisper
+# Vá tương thích PyAV 19+ cho faster-whisper và lọc log libav
 try:
+    # pyrefly: ignore [missing-import]
     import av
+    try:
+        av.logging.set_level(av.logging.ERROR)
+    except Exception:
+        pass
     _orig_av_open = av.open
 
     def _safe_av_open(*args, **kwargs):
@@ -47,7 +52,9 @@ except ImportError:
     except Exception:
         pass
 
+# pyrefly: ignore [missing-import]
 from deep_translator import GoogleTranslator
+# pyrefly: ignore [missing-import]
 from faster_whisper import WhisperModel
 # pyrefly: ignore [missing-import]
 from gtts import gTTS
@@ -60,21 +67,33 @@ from pydub import AudioSegment
 # ══════════════════════════════════════════════════════════════════════
 
 def _find_ffmpeg_bin() -> str:
-    """Tìm đường dẫn ffmpeg.exe ưu tiên thư mục gốc dự án."""
+    """Tìm đường dẫn ffmpeg.exe ưu tiên thư mục gốc dự án và các thư mục tools."""
     proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    local_ff = os.path.join(proj_dir, "ffmpeg.exe")
-    if os.path.isfile(local_ff):
-        return local_ff
+    candidates = [
+        os.path.join(proj_dir, "ffmpeg.exe"),
+        os.path.join(proj_dir, "ffmpeg"),
+        os.path.join(proj_dir, "tools", "ffmpeg", "bin", "ffmpeg.exe"),
+        os.path.join(proj_dir, "tools", "ffmpeg.exe"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
     found = shutil.which("ffmpeg")
     return found or "ffmpeg"
 
 
 def _find_ffprobe_bin() -> str:
-    """Tìm đường dẫn ffprobe.exe ưu tiên thư mục gốc dự án."""
+    """Tìm đường dẫn ffprobe.exe ưu tiên thư mục gốc dự án và các thư mục tools."""
     proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    local_probe = os.path.join(proj_dir, "ffprobe.exe")
-    if os.path.isfile(local_probe):
-        return local_probe
+    candidates = [
+        os.path.join(proj_dir, "ffprobe.exe"),
+        os.path.join(proj_dir, "ffprobe"),
+        os.path.join(proj_dir, "tools", "ffmpeg", "bin", "ffprobe.exe"),
+        os.path.join(proj_dir, "tools", "ffprobe.exe"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
     found = shutil.which("ffprobe")
     return found or "ffprobe"
 
@@ -446,6 +465,7 @@ def translate_dialogues_gemini(dialogues: list[str], api_key: str, source_lang: 
 def _fetch_gtx_translate(text: str, sl: str = "zh-CN", tl: str = "vi") -> str:
     """Gọi Google Translate qua curl_cffi giả lập Chrome tránh lỗi TooManyRequests / Timeout."""
     try:
+        # pyrefly: ignore [missing-import]
         from curl_cffi import requests as c_requests
         url = "https://translate.googleapis.com/translate_a/single"
         params = {"client": "gtx", "sl": sl, "tl": tl, "dt": "t", "q": text}

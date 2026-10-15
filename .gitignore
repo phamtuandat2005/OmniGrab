@@ -48,3 +48,8 @@ test/
 *.build/
 *.dist/
 nuitka-crash-report.xml
+
+profiles/
+*cookies.txt
+client_secrets*.json
+token*.json

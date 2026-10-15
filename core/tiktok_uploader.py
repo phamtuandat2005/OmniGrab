@@ -381,29 +381,32 @@ class TikTokUploader:
         self._log(f"[TIKTOK AUTO] 🍪 Đã đọc và nạp {len(cookies)} cookies phiên TikTok.")
 
         with sync_playwright() as p:
-            # Khởi chạy trình duyệt thật (ưu tiên Edge/Chrome hoặc Chromium có sẵn)
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--start-maximized",
-                "--no-sandbox",
-            ]
+            # Tự động tìm Google Chrome hoặc Microsoft Edge có sẵn trên máy khách hàng
             browser = None
-            for channel in ("msedge", "chrome", None):
-                try:
-                    kwargs: Dict[str, Any] = {
-                        "headless": headless,
-                        "args": launch_args,
-                    }
-                    if channel:
-                        kwargs["channel"] = channel
-                    browser = p.chromium.launch(**kwargs)
-                    if browser:
-                        break
-                except Exception:
-                    continue
+            launch_args = ["--disable-blink-features=AutomationControlled", "--start-maximized", "--no-sandbox"]
 
+            # Ưu tiên 1: Google Chrome có sẵn trên Windows
+            try:
+                browser = p.chromium.launch(channel="chrome", headless=headless, args=launch_args)
+            except Exception:
+                pass
+
+            # Ưu tiên 2: Microsoft Edge có sẵn trên mọi máy Windows
             if not browser:
-                raise RuntimeError("Không thể khởi động trình duyệt web (Edge/Chrome/Chromium). Vui lòng kiểm tra môi trường.")
+                try:
+                    browser = p.chromium.launch(channel="msedge", headless=headless, args=launch_args)
+                except Exception:
+                    pass
+
+            # Ưu tiên 3: Chromium mặc định của Playwright
+            if not browser:
+                try:
+                    browser = p.chromium.launch(headless=headless, args=launch_args)
+                except Exception as e:
+                    raise Exception(
+                        "Không tìm thấy trình duyệt Chrome hoặc Edge trên máy tính. "
+                        "Vui lòng cài đặt Google Chrome hoặc chạy lệnh 'playwright install chromium'."
+                    ) from e
 
             try:
                 context = browser.new_context(

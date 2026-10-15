@@ -83,6 +83,12 @@ from ui.styles import COLORS, PLATFORM_COLORS
 _SETTINGS_FILE = Path.home() / ".omnigrab_settings.json"
 
 
+def _resolve_icon_path(rel_path: str) -> str:
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    target = os.path.join(base, rel_path)
+    return target if os.path.exists(target) else rel_path
+
+
 # ══════════════════════════════════════════════════════════════════════
 # DIALOG LỒNG TIẾNG AI — Popup độc lập
 # ══════════════════════════════════════════════════════════════════════
@@ -542,6 +548,15 @@ class MainWindow(QMainWindow):
         self.tiktok_delay_minutes: int = 45
         self.tiktok_cookies_path: str = ""
         self.tiktok_headless: bool = False
+        self.auto_upload_youtube: bool = False
+        self.youtube_privacy: str = "public"
+        self.youtube_cookies_path: str = "youtube_cookies.txt"
+        self.youtube_client_secrets: str = "client_secret.json"
+        self.youtube_schedule_enabled: bool = False
+        self.youtube_schedule_date: str = ""
+        self.youtube_schedule_time: str = ""
+        self.youtube_scheduled_time_str: str = ""
+        self.youtube_default_tags: str = "Shorts, AI, PhimHay, ReviewPhim"
         self.active_page: int = self.PAGE_LINKS
         self.studio_last_video: str = ""
         self._saved_screen_name: str = ""
@@ -682,6 +697,17 @@ class MainWindow(QMainWindow):
         self.tiktok_cookies_path = saved_tt_cookie if (saved_tt_cookie and os.path.isfile(saved_tt_cookie)) else ""
         self.tiktok_headless = bool(data.get("tiktok_headless") if "tiktok_headless" in data else qs.value("tiktok_headless", False, type=bool))
 
+        # 14. Cấu hình tự động đăng YouTube Shorts
+        self.auto_upload_youtube = bool(data.get("auto_upload_youtube") if "auto_upload_youtube" in data else qs.value("auto_upload_youtube", False, type=bool))
+        self.youtube_privacy = str(data.get("youtube_privacy") or qs.value("youtube_privacy", "public", type=str) or "public")
+        self.youtube_cookies_path = str(data.get("youtube_cookies_path") or data.get("youtube_client_secrets") or qs.value("youtube_cookies_path", "youtube_cookies.txt", type=str) or "youtube_cookies.txt")
+        self.youtube_client_secrets = str(data.get("youtube_client_secrets") or qs.value("youtube_client_secrets", "client_secret.json", type=str) or "client_secret.json")
+        self.youtube_schedule_enabled = bool(data.get("youtube_schedule_enabled") if "youtube_schedule_enabled" in data else qs.value("youtube_schedule_enabled", False, type=bool))
+        self.youtube_schedule_date = str(data.get("youtube_schedule_date") or qs.value("youtube_schedule_date", "", type=str) or "")
+        self.youtube_schedule_time = str(data.get("youtube_schedule_time") or qs.value("youtube_schedule_time", "", type=str) or "")
+        self.youtube_scheduled_time_str = str(data.get("youtube_scheduled_time_str") or qs.value("youtube_scheduled_time_str", "", type=str) or "")
+        self.youtube_default_tags = str(data.get("youtube_default_tags") or qs.value("youtube_default_tags", "Shorts, AI, PhimHay, ReviewPhim", type=str) or "Shorts, AI, PhimHay, ReviewPhim")
+
     def _save_settings(self) -> None:
         """Lưu toàn bộ cài đặt người dùng vào JSON và QSettings."""
         # 1. Thu thập trang làm việc hiện tại
@@ -743,6 +769,15 @@ class MainWindow(QMainWindow):
             "tiktok_delay_minutes": getattr(self, "tiktok_delay_minutes", 45),
             "tiktok_cookies_path": getattr(self, "tiktok_cookies_path", ""),
             "tiktok_headless": getattr(self, "tiktok_headless", True),
+            "auto_upload_youtube": getattr(self, "auto_upload_youtube", False),
+            "youtube_privacy": getattr(self, "youtube_privacy", "public"),
+            "youtube_cookies_path": getattr(self, "youtube_cookies_path", "youtube_cookies.txt"),
+            "youtube_client_secrets": getattr(self, "youtube_client_secrets", "client_secret.json"),
+            "youtube_schedule_enabled": getattr(self, "youtube_schedule_enabled", False),
+            "youtube_schedule_date": getattr(self, "youtube_schedule_date", ""),
+            "youtube_schedule_time": getattr(self, "youtube_schedule_time", ""),
+            "youtube_scheduled_time_str": getattr(self, "youtube_scheduled_time_str", ""),
+            "youtube_default_tags": getattr(self, "youtube_default_tags", "Shorts, AI, PhimHay, ReviewPhim"),
             "active_page": cur_page,
             "studio_last_video": studio_vid,
             "window_w": win_w,
@@ -899,25 +934,29 @@ class MainWindow(QMainWindow):
         # ── 1. Tệp ──
         menu_file = bar.addMenu("Tệp")
 
-        act_output = QAction("📁  Thư mục lưu video...", self)
+        act_output = QAction("Thư mục lưu video...", self)
         act_output.triggered.connect(self._on_choose_output_dir)
         menu_file.addAction(act_output)
 
-        act_cookie = QAction("🍪  Nạp file Cookie (.txt)...", self)
+        act_cookie = QAction("Nạp file Cookie (.txt)...", self)
         act_cookie.triggered.connect(self._on_choose_cookie)
         menu_file.addAction(act_cookie)
 
-        act_tiktok_cookie = QAction("🍪  Nạp file Cookie TikTok (.txt)...", self)
+        act_tiktok_cookie = QAction("Nạp file Cookie TikTok (.txt)...", self)
         act_tiktok_cookie.triggered.connect(self._on_choose_tiktok_cookie)
         menu_file.addAction(act_tiktok_cookie)
 
-        act_import = QAction("📋  Nhập danh sách link từ file...", self)
+        act_yt_cookie = QAction("Nạp file Cookie YouTube (.txt)...", self)
+        act_yt_cookie.triggered.connect(self._on_choose_youtube_cookies)
+        menu_file.addAction(act_yt_cookie)
+
+        act_import = QAction("Nhập danh sách link từ file...", self)
         act_import.triggered.connect(self._on_import_file)
         menu_file.addAction(act_import)
 
         menu_file.addSeparator()
 
-        act_quit = QAction("🚪  Thoát", self)
+        act_quit = QAction("Thoát", self)
         act_quit.setShortcut(QKeySequence("Alt+F4"))
         act_quit.triggered.connect(self.close)
         menu_file.addAction(act_quit)
@@ -925,17 +964,17 @@ class MainWindow(QMainWindow):
         # ── 2. Chế độ tải ──
         menu_mode = bar.addMenu("Chế độ tải")
 
-        act_links = QAction("1. 🔗  Tải theo danh sách liên kết", self)
+        act_links = QAction("1. Tải theo danh sách liên kết", self)
         act_links.setShortcut(QKeySequence("Ctrl+1"))
         act_links.triggered.connect(lambda: self._switch_page(self.PAGE_LINKS))
         menu_mode.addAction(act_links)
 
-        act_channel = QAction("2. 📡  Quét & Tải theo Kênh / Hồ sơ", self)
+        act_channel = QAction("2. Quét & Tải theo Kênh / Hồ sơ", self)
         act_channel.setShortcut(QKeySequence("Ctrl+2"))
         act_channel.triggered.connect(lambda: self._switch_page(self.PAGE_CHANNEL))
         menu_mode.addAction(act_channel)
 
-        act_studio = QAction("3. 🎬  Studio Lồng tiếng & Soát kịch bản", self)
+        act_studio = QAction("3. Studio Lồng tiếng & Soát kịch bản", self)
         act_studio.setShortcut(QKeySequence("Ctrl+3"))
         act_studio.triggered.connect(lambda: self._switch_page(self.PAGE_STUDIO))
         menu_mode.addAction(act_studio)
@@ -943,47 +982,51 @@ class MainWindow(QMainWindow):
         # ── 3. Công cụ ──
         menu_tools = bar.addMenu("Công cụ")
 
-        act_threads = QAction("⚙  Cài đặt số luồng tải đồng thời...", self)
+        act_threads = QAction("Cài đặt số luồng tải đồng thời...", self)
         act_threads.triggered.connect(self._on_set_threads)
         menu_tools.addAction(act_threads)
 
-        act_dub_settings = QAction("🎙  Cài đặt Lồng tiếng AI...", self)
+        act_dub_settings = QAction("Cài đặt Lồng tiếng AI...", self)
         act_dub_settings.setShortcut(QKeySequence("Ctrl+L"))
         act_dub_settings.triggered.connect(self._on_open_dub_dialog)
         menu_tools.addAction(act_dub_settings)
 
-        act_mix_settings = QAction("🎚  Cài đặt Tỷ lệ Hòa âm (Voice & Nhạc nền)...", self)
+        act_mix_settings = QAction("Cài đặt Tỷ lệ Hòa âm (Voice & Nhạc nền)...", self)
         act_mix_settings.triggered.connect(self._on_open_audio_mix_dialog)
         menu_tools.addAction(act_mix_settings)
 
-        act_tiktok_settings = QAction("📤  Cài đặt Tự động Đăng TikTok...", self)
+        act_tiktok_settings = QAction("Cài đặt Tự động Đăng TikTok...", self)
         act_tiktok_settings.triggered.connect(self._on_open_tiktok_dialog)
         menu_tools.addAction(act_tiktok_settings)
 
-        act_dub_file = QAction("🎬  Lồng tiếng file MP4 có sẵn trên máy...", self)
+        act_youtube_settings = QAction("Cài đặt Tự động Đăng & Hẹn giờ YouTube...", self)
+        act_youtube_settings.triggered.connect(self._on_open_youtube_dialog)
+        menu_tools.addAction(act_youtube_settings)
+
+        act_dub_file = QAction("Lồng tiếng file MP4 có sẵn trên máy...", self)
         act_dub_file.triggered.connect(self._on_dub_manual)
         menu_tools.addAction(act_dub_file)
 
         menu_tools.addSeparator()
 
-        act_update = QAction("🔄  Cập nhật lõi yt-dlp & FFmpeg", self)
+        act_update = QAction("Cập nhật lõi yt-dlp & FFmpeg", self)
         act_update.triggered.connect(self._on_update_tools)
         menu_tools.addAction(act_update)
 
         # ── 4. Trợ giúp ──
         menu_help = bar.addMenu("Trợ giúp")
 
-        act_activate = QAction("🔑  Kích hoạt bản quyền...", self)
+        act_activate = QAction("Kích hoạt bản quyền...", self)
         act_activate.triggered.connect(self._on_open_activation_dialog)
         menu_help.addAction(act_activate)
 
         menu_help.addSeparator()
 
-        act_about = QAction("ℹ  Thông tin phần mềm (About)", self)
+        act_about = QAction("Thông tin phần mềm (About)", self)
         act_about.triggered.connect(self._on_about)
         menu_help.addAction(act_about)
 
-        act_guide = QAction("📖  Hướng dẫn sử dụng", self)
+        act_guide = QAction("Hướng dẫn sử dụng", self)
         act_guide.triggered.connect(self._on_guide)
         menu_help.addAction(act_guide)
 
@@ -1854,6 +1897,65 @@ class MainWindow(QMainWindow):
                 f"Cài đặt đã lưu — Tự động đăng TikTok: {st} | Chế độ: {self.tiktok_privacy} | Giãn cách: {self.tiktok_delay_minutes}p"
             )
 
+    def _on_choose_youtube_cookies(self) -> None:
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Chọn file Cookie YouTube (youtube_cookies.txt)", "",
+            "Cookie files (*.txt *.json);;Tất cả file (*.*)"
+        )
+        if f and os.path.isfile(f):
+            self.youtube_cookies_path = f
+            self._save_settings()
+            self._append_log("YOUTUBE AUTO", f"Đã nạp file Cookie YouTube: {os.path.basename(f)}")
+            QMessageBox.information(
+                self, "Đã nạp Cookie YouTube",
+                f"✅ Đã nạp thành công file Cookie YouTube:\n{f}"
+            )
+
+    def _on_choose_youtube_secret(self) -> None:
+        self._on_choose_youtube_cookies()
+
+    def _on_open_youtube_dialog(self) -> None:
+        from ui.youtube_upload_dialog import YouTubeUploadDialog
+        sched_dt = None
+        if getattr(self, "youtube_scheduled_time_str", ""):
+            try:
+                sched_dt = datetime.datetime.fromisoformat(self.youtube_scheduled_time_str)
+            except Exception:
+                sched_dt = None
+
+        dlg = YouTubeUploadDialog(
+            auto_upload=getattr(self, "auto_upload_youtube", False),
+            privacy=getattr(self, "youtube_privacy", "public"),
+            cookies_path=getattr(self, "youtube_cookies_path", "youtube_cookies.txt"),
+            schedule_enabled=getattr(self, "youtube_schedule_enabled", False),
+            schedule_date=getattr(self, "youtube_schedule_date", ""),
+            schedule_time=getattr(self, "youtube_schedule_time", ""),
+            scheduled_datetime=sched_dt,
+            default_tags=getattr(self, "youtube_default_tags", "Shorts, AI, PhimHay, ReviewPhim"),
+            parent=self,
+        )
+        if dlg.exec():
+            self.auto_upload_youtube = dlg.result_auto_upload
+            self.youtube_privacy = dlg.result_privacy
+            self.youtube_cookies_path = dlg.result_cookies_path
+            self.youtube_schedule_enabled = dlg.result_schedule_enabled
+            self.youtube_schedule_date = dlg.result_schedule_date
+            self.youtube_schedule_time = dlg.result_schedule_time
+            if dlg.result_scheduled_datetime:
+                self.youtube_scheduled_time_str = dlg.result_scheduled_datetime.isoformat()
+            else:
+                self.youtube_scheduled_time_str = ""
+            self.youtube_default_tags = dlg.result_default_tags
+            self._save_settings()
+            self._refresh_statusbar()
+
+            st = "BẬT" if self.auto_upload_youtube else "TẮT"
+            sched_info = f" (Hẹn giờ: {self.youtube_schedule_date} {self.youtube_schedule_time})" if self.youtube_schedule_enabled else ""
+            self._append_log(
+                "YOUTUBE AUTO",
+                f"Cài đặt đã lưu — Tự động đăng YouTube Shorts: {st} | Chế độ: {self.youtube_privacy}{sched_info}"
+            )
+
     def _on_dub_manual(self) -> None:
         f, _ = QFileDialog.getOpenFileName(
             self, "Chọn video MP4 để lồng tiếng & soát kịch bản", "",
@@ -2497,6 +2599,13 @@ class MainWindow(QMainWindow):
             tiktok_privacy=getattr(self, "tiktok_privacy", "public"),
             tiktok_delay_minutes=getattr(self, "tiktok_delay_minutes", 45),
             tiktok_headless=getattr(self, "tiktok_headless", False),
+            auto_upload_youtube=getattr(self, "auto_upload_youtube", False),
+            youtube_privacy=getattr(self, "youtube_privacy", "public"),
+            youtube_cookies_path=getattr(self, "youtube_cookies_path", "youtube_cookies.txt"),
+            youtube_schedule_enabled=getattr(self, "youtube_schedule_enabled", False),
+            youtube_schedule_date=getattr(self, "youtube_schedule_date", ""),
+            youtube_schedule_time=getattr(self, "youtube_schedule_time", ""),
+            youtube_default_tags=getattr(self, "youtube_default_tags", "Shorts, AI, PhimHay, ReviewPhim"),
             parent=self,
         )
         self._worker.status_updated.connect(self._on_status_updated)
@@ -2683,8 +2792,56 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._append_log("LỒNG TIẾNG", f"⚠ Không thể tự động mở video: {e}")
 
-        # 3. Tự động đăng TikTok nếu bật chế độ Auto TikTok
-        if getattr(self, "auto_upload_tiktok", False) and output_path and os.path.isfile(output_path):
+        # Hàm kích hoạt đăng YouTube Shorts tự động
+        def _trigger_auto_youtube_upload():
+            if getattr(self, "auto_upload_youtube", False) and output_path and os.path.isfile(output_path):
+                self._append_log("YOUTUBE AUTO", f"🎬 Bắt đầu quy trình tự động đăng YouTube Shorts cho: {file_name}")
+                try:
+                    from core.youtube_uploader import YouTubeUploadWorker, generate_youtube_metadata
+                    v_title = Path(output_path).stem
+                    yt_title, yt_desc, yt_tags = generate_youtube_metadata(
+                        script_content=v_title,
+                        api_key=self.gemini_api_key,
+                        video_title=v_title,
+                    )
+                    extra_tags = [t.strip() for t in getattr(self, "youtube_default_tags", "").split(",") if t.strip()]
+                    for et in extra_tags:
+                        if et not in yt_tags:
+                            yt_tags.append(et)
+
+                    sched_date = getattr(self, "youtube_schedule_date", None) if getattr(self, "youtube_schedule_enabled", False) else None
+                    sched_time = getattr(self, "youtube_schedule_time", None) if getattr(self, "youtube_schedule_enabled", False) else None
+                    sched_msg = f" | Hẹn giờ: {sched_date} lúc {sched_time}" if (sched_date and sched_time) else ""
+                    self._append_log("YOUTUBE AUTO", f"Tiêu đề: {yt_title}")
+                    self._append_log("YOUTUBE AUTO", f"Đang đăng lên YouTube Studio (Chế độ: {self.youtube_privacy}{sched_msg})...")
+
+                    self._yt_standalone_worker = YouTubeUploadWorker(
+                        video_path=output_path,
+                        title=yt_title,
+                        description=yt_desc,
+                        tags=yt_tags,
+                        privacy_status=getattr(self, "youtube_privacy", "public"),
+                        schedule_date=sched_date,
+                        schedule_time=sched_time,
+                        cookies_file_path=getattr(self, "youtube_cookies_path", "youtube_cookies.txt"),
+                        parent=self,
+                    )
+                    self._yt_standalone_worker.log_message.connect(lambda m: self._append_log("YOUTUBE AUTO", m))
+
+                    def _on_yt_standalone_done(v, ok, msg, v_url):
+                        if ok:
+                            self._append_log("YOUTUBE AUTO", f"✅ Đã đăng thành công video lên YouTube Shorts: {Path(v).name} → {v_url}")
+                        else:
+                            self._append_log("YOUTUBE AUTO", f"⚠ Đăng YouTube Shorts thất bại: {msg}")
+
+                    self._yt_standalone_worker.upload_finished.connect(_on_yt_standalone_done)
+                    self._yt_standalone_worker.start()
+                except Exception as yt_err:
+                    self._append_log("YOUTUBE AUTO", f"⚠ Lỗi khởi chạy đăng YouTube: {yt_err}")
+
+        # 3. Tự động đăng TikTok và YouTube theo chuỗi lần lượt
+        has_tiktok = getattr(self, "auto_upload_tiktok", False) and output_path and os.path.isfile(output_path)
+        if has_tiktok:
             self._append_log("TIKTOK AUTO", f"🎬 Bắt đầu quy trình tự động đăng TikTok cho: {file_name}")
             try:
                 from core.tiktok_uploader import TikTokUploadWorker, generate_tiktok_caption
@@ -2715,10 +2872,18 @@ class MainWindow(QMainWindow):
                     else:
                         self._append_log("TIKTOK AUTO", f"⚠ Đăng TikTok thất bại: {msg}")
 
+                    # Gọi tiếp tục YouTube Shorts sau khi TikTok hoàn thành
+                    _trigger_auto_youtube_upload()
+
                 self._tt_standalone_worker.upload_finished.connect(_on_standalone_done)
                 self._tt_standalone_worker.start()
             except Exception as tt_err:
                 self._append_log("TIKTOK AUTO", f"⚠ Lỗi khởi chạy đăng TikTok: {tt_err}")
+                # Nếu TikTok bị lỗi thì vẫn gọi YouTube Shorts
+                _trigger_auto_youtube_upload()
+        else:
+            # Nếu không bật TikTok, trực tiếp gọi YouTube Shorts
+            _trigger_auto_youtube_upload()
 
         # 3. Hộp thoại thông báo hoàn tất với các nút thao tác tiện lợi
         msg_box = QMessageBox(self)

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,6 +29,12 @@ from PyQt6.QtWidgets import (
 from ui.styles import COLORS
 
 
+def _resolve_icon_path(rel_path: str) -> str:
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    target = os.path.join(base, rel_path)
+    return target if os.path.exists(target) else rel_path
+
+
 class TikTokUploadDialog(QDialog):
     """
     Popup cài đặt Tự động Đăng TikTok (Auto TikTok Upload).
@@ -44,7 +51,10 @@ class TikTokUploadDialog(QDialog):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("📤 Cài đặt Tự động Đăng Video lên TikTok")
+        self.setWindowTitle("Cài đặt Tự động Đăng Video lên TikTok")
+        tt_icon_p = _resolve_icon_path("assets/icon/titktok.png")
+        if os.path.exists(tt_icon_p):
+            self.setWindowIcon(QIcon(tt_icon_p))
         self.setMinimumWidth(580)
         self.setModal(True)
 
@@ -58,6 +68,7 @@ class TikTokUploadDialog(QDialog):
 
     def _build_ui(self) -> None:
         c = COLORS
+        ck_p = _resolve_icon_path("assets/checkmark.png").replace("\\", "/")
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {c['bg_secondary']};
@@ -67,13 +78,29 @@ class TikTokUploadDialog(QDialog):
                 background: transparent;
             }}
             QCheckBox {{
-                color: {c['text_secondary']};
+                color: {c['text_primary']};
                 font-size: 13px;
-                spacing: 8px;
+                spacing: 10px;
+                background: transparent;
             }}
             QCheckBox:checked {{
-                color: {c['text_primary']};
-                font-weight: 500;
+                color: #ffffff;
+                font-weight: 600;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 2px solid #64748b;
+                background-color: {c['bg_input']};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: #22c55e;
+            }}
+            QCheckBox::indicator:checked {{
+                border: 2px solid #22c55e;
+                background-color: #22c55e;
+                image: url({ck_p});
             }}
             QComboBox, QSpinBox {{
                 background-color: {c['bg_input']};
@@ -103,11 +130,24 @@ class TikTokUploadDialog(QDialog):
         root.setSpacing(16)
 
         # ── 1. Tiêu đề ──
-        lbl_header = QLabel("📤 Tự động Đăng TikTok (Auto TikTok Uploader)")
+        h_box = QHBoxLayout()
+        lbl_icon = QLabel()
+        tt_icon_p = _resolve_icon_path("assets/icon/titktok.png")
+        if os.path.exists(tt_icon_p):
+            pix = QPixmap(tt_icon_p).scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            lbl_icon.setPixmap(pix)
+        else:
+            lbl_icon.setText("🎵")
+            lbl_icon.setStyleSheet(f"font-size: 20px; color: {c['platform_tiktok']};")
+
+        lbl_header = QLabel("Tự động Đăng TikTok (Auto TikTok Uploader)")
         lbl_header.setStyleSheet(
             f"font-size: 16px; font-weight: 700; color: {c['platform_tiktok']};"
         )
-        root.addWidget(lbl_header)
+        h_box.addWidget(lbl_icon)
+        h_box.addWidget(lbl_header)
+        h_box.addStretch(1)
+        root.addLayout(h_box)
 
         lbl_desc = QLabel(
             "Tự động hóa 1-chạm: Sau khi lồng tiếng xong, Gemini sẽ tự tạo Caption & Hashtag "

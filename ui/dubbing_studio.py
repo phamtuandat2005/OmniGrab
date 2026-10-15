@@ -18,9 +18,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 # pyrefly: ignore [missing-import]
-from PyQt6.QtCore import QObject, QTime, QUrl, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, QTime, QUrl, Qt, QThread, pyqtSignal
 # pyrefly: ignore [missing-import]
 from PyQt6.QtGui import QColor, QFont, QIcon
+
+
+def _resolve_icon_path(rel_path: str) -> str:
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    target = os.path.join(base, rel_path)
+    return target if os.path.exists(target) else rel_path
 # pyrefly: ignore [missing-import]
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 # pyrefly: ignore [missing-import]
@@ -747,7 +753,9 @@ class DubbingStudioWidget(QWidget):
         self._slider_dragging: bool = False
         self._transcribe_worker: Optional[StudioTranscribeWorker] = None
         self._tiktok_worker: Optional[Any] = None
+        self._youtube_worker: Optional[Any] = None
         self._btn_upload_tiktok: Optional[QPushButton] = None
+        self._btn_upload_youtube: Optional[QPushButton] = None
         self._btn_audio_mix: Optional[QPushButton] = None
 
         # Cấu hình âm lượng hòa âm (mặc định chuẩn phòng thu)
@@ -1022,37 +1030,15 @@ class DubbingStudioWidget(QWidget):
         footer_layout.setContentsMargins(0, 4, 0, 0)
         footer_layout.setSpacing(10)
 
-        btn_back = QPushButton("⬅  Quay lại màn hình tải")
+        btn_back = QPushButton("Quay lại màn hình tải")
         btn_back.setStyleSheet(self._btn_secondary_style())
         btn_back.clicked.connect(self._on_back_clicked)
         footer_layout.addWidget(btn_back)
 
         footer_layout.addStretch(1)
+       
 
-        btn_export_srt = QPushButton("📝  Xuất file phụ đề .srt")
-        btn_export_srt.setStyleSheet(self._btn_accent_style(c['accent_blue']))
-        btn_export_srt.clicked.connect(self._on_export_srt)
-        footer_layout.addWidget(btn_export_srt)
-
-        btn_export_dub = QPushButton("🎬  Xuất video lồng tiếng")
-        btn_export_dub.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['btn_green_bg']};
-                color: #ffffff;
-                font-weight: bold;
-                font-size: 13px;
-                border: 1px solid {c['btn_green_border']};
-                border-radius: 6px;
-                padding: 8px 16px;
-            }}
-            QPushButton:hover {{
-                background-color: {c['btn_green_hover']};
-            }}
-        """)
-        btn_export_dub.clicked.connect(self._on_export_dubbing)
-        footer_layout.addWidget(btn_export_dub)
-
-        self._btn_upload_tiktok = QPushButton("📤  ĐĂNG NGAY LÊN TIKTOK")
+        self._btn_upload_tiktok = QPushButton(" ĐĂNG TIKTOK")
         self._btn_upload_tiktok.setStyleSheet(f"""
             QPushButton {{
                 background-color: {c['platform_tiktok']};
@@ -1069,6 +1055,24 @@ class DubbingStudioWidget(QWidget):
         """)
         self._btn_upload_tiktok.clicked.connect(self._on_upload_now_tiktok)
         footer_layout.addWidget(self._btn_upload_tiktok)
+
+        self._btn_upload_youtube = QPushButton("▶  ĐĂNG YOUTUBE")
+        self._btn_upload_youtube.setStyleSheet("""
+            QPushButton {
+                background-color: #ff0000;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 13px;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 18px;
+            }
+            QPushButton:hover {
+                background-color: #cc0000;
+            }
+        """)
+        self._btn_upload_youtube.clicked.connect(self._on_upload_now_youtube)
+        footer_layout.addWidget(self._btn_upload_youtube)
 
         layout.addLayout(footer_layout)
 
@@ -1764,5 +1768,105 @@ class DubbingStudioWidget(QWidget):
                 self,
                 "Lỗi đăng TikTok",
                 f"Không thể đăng video lên TikTok:\n{msg}"
+            )
+
+    def _on_upload_now_youtube(self) -> None:
+        """Đăng ngay video đang mở trong Studio lên kênh YouTube Shorts."""
+        if not self.current_video_path or not os.path.isfile(self.current_video_path):
+            QMessageBox.warning(self, "Chưa chọn video", "Vui lòng mở một video MP4 trước khi đăng lên YouTube.")
+            return
+
+        main_win = self.window()
+        ck_path = getattr(main_win, "youtube_cookies_path", "youtube_cookies.txt")
+        if not os.path.isabs(ck_path):
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ck_path = os.path.join(base_dir, ck_path)
+
+        if not os.path.exists(ck_path):
+            f, _ = QFileDialog.getOpenFileName(
+                self,
+                "Chọn file Cookie YouTube (youtube_cookies.txt)",
+                "",
+                "Cookie files (*.txt *.json);;Tất cả file (*.*)",
+            )
+            if f and os.path.isfile(f):
+                ck_path = f
+                if hasattr(main_win, "youtube_cookies_path"):
+                    main_win.youtube_cookies_path = f
+                    if hasattr(main_win, "_save_settings"):
+                        main_win._save_settings()
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Chưa có Cookie YouTube",
+                    "Cần file youtube_cookies.txt để đăng video lên YouTube Studio.\n"
+                    "Vui lòng vào Menu 'Công cụ' ➔ 'Cài đặt Tự động Đăng YouTube...' để thiết lập hoặc xuất file cookie."
+                )
+                return
+
+        # Tạo tiêu đề và mô tả với Gemini
+        v_stem = Path(self.current_video_path).stem
+        gemini_key = getattr(main_win, "gemini_api_key", "")
+        from core.youtube_uploader import generate_youtube_metadata, YouTubeUploadWorker
+        yt_title, yt_desc, yt_tags = generate_youtube_metadata(
+            script_content=v_stem,
+            api_key=gemini_key,
+            video_title=v_stem,
+        )
+        extra_tags = [t.strip() for t in getattr(main_win, "youtube_default_tags", "").split(",") if t.strip()]
+        for et in extra_tags:
+            if et not in yt_tags:
+                yt_tags.append(et)
+
+        privacy = getattr(main_win, "youtube_privacy", "public")
+        sched_date = getattr(main_win, "youtube_schedule_date", None) if getattr(main_win, "youtube_schedule_enabled", False) else None
+        sched_time = getattr(main_win, "youtube_schedule_time", None) if getattr(main_win, "youtube_schedule_enabled", False) else None
+
+        if self._btn_upload_youtube:
+            self._btn_upload_youtube.setEnabled(False)
+        self._progress_bar.setVisible(True)
+        self._lbl_status_msg.setVisible(True)
+        self._lbl_status_msg.setText("▶ Đang khởi động Playwright để tải video lên YouTube Studio...")
+
+        self._youtube_worker = YouTubeUploadWorker(
+            video_path=self.current_video_path,
+            title=yt_title,
+            description=yt_desc,
+            tags=yt_tags,
+            privacy_status=privacy,
+            schedule_date=sched_date,
+            schedule_time=sched_time,
+            cookies_file_path=ck_path,
+            parent=self,
+        )
+        self._youtube_worker.log_message.connect(self._lbl_status_msg.setText)
+        self._youtube_worker.upload_finished.connect(self._on_youtube_worker_finished)
+        self._youtube_worker.start()
+
+    def _on_youtube_worker_finished(self, video_path: str, success: bool, msg: str, video_url: str) -> None:
+        if self._btn_upload_youtube:
+            self._btn_upload_youtube.setEnabled(True)
+        self._progress_bar.setVisible(False)
+
+        if success:
+            self._lbl_status_msg.setText(f"🎉 Đã tải lên YouTube: {video_url}")
+            QMessageBox.information(
+                self,
+                "Đăng YouTube thành công",
+                f"🎉 Đã đăng thành công video lên YouTube!\n\n"
+                f"🔗 Link video: {video_url}\n{msg}"
+            )
+            # Cập nhật trạng thái các dòng trong bảng
+            for row in range(self.table.rowCount()):
+                status_item = QTableWidgetItem("▶ Đã đăng YouTube")
+                status_item.setForeground(QColor("#ff0000"))
+                status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, self.COL_STATUS, status_item)
+        else:
+            self._lbl_status_msg.setText(f"❌ Lỗi đăng YouTube: {msg}")
+            QMessageBox.warning(
+                self,
+                "Lỗi đăng YouTube",
+                f"Không thể tải video lên YouTube:\n{msg}"
             )
 

@@ -240,10 +240,10 @@ def get_app_stylesheet() -> str:
     }}
 
     QCheckBox::indicator {{
-        width: 16px;
-        height: 16px;
-        border-radius: 3px;
-        border: 1px solid {c["border"]};
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        border: 2px solid {c["border"]};
         background-color: {c["bg_input"]};
     }}
 
@@ -255,6 +255,32 @@ def get_app_stylesheet() -> str:
 
     QCheckBox::indicator:hover {{
         border-color: {c["accent_blue"]};
+    }}
+
+    /* ===== RADIO BUTTON ===== */
+    QRadioButton {{
+        color: {c["text_primary"]};
+        spacing: 8px;
+        font-size: 13px;
+        background: transparent;
+        border: none;
+    }}
+
+    QRadioButton::indicator {{
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        border: 2px solid #64748b;
+        background-color: {c["bg_input"]};
+    }}
+
+    QRadioButton::indicator:hover {{
+        border-color: {c["accent_blue"]};
+    }}
+
+    QRadioButton::indicator:checked {{
+        border: 2px solid {c["accent_blue"]};
+        background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 {c["accent_blue"]}, stop:0.55 {c["accent_blue"]}, stop:0.56 {c["bg_input"]}, stop:1 {c["bg_input"]});
     }}
 
     /* ===== THANH CUỘN ===== */

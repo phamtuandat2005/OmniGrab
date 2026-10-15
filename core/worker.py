@@ -63,6 +63,15 @@ class DownloadWorker(QThread):
         tiktok_privacy: str = "public",
         tiktok_delay_minutes: int = 45,
         tiktok_headless: bool = True,
+        auto_upload_youtube: bool = False,
+        youtube_privacy: str = "public",
+        youtube_cookies_path: str = "youtube_cookies.txt",
+        youtube_client_secrets: str = "",
+        youtube_schedule_enabled: bool = False,
+        youtube_schedule_date: str = "",
+        youtube_schedule_time: str = "",
+        youtube_scheduled_time: Optional[Any] = None,
+        youtube_default_tags: str = "Shorts, AI, PhimHay, ReviewPhim",
         parent: Optional[Any] = None,
     ) -> None:
         """
@@ -99,6 +108,15 @@ class DownloadWorker(QThread):
         self.tiktok_privacy = tiktok_privacy
         self.tiktok_delay_minutes = tiktok_delay_minutes
         self.tiktok_headless = tiktok_headless
+        self.auto_upload_youtube = auto_upload_youtube
+        self.youtube_privacy = youtube_privacy
+        self.youtube_cookies_path = youtube_cookies_path or "youtube_cookies.txt"
+        self.youtube_client_secrets = youtube_client_secrets
+        self.youtube_schedule_enabled = youtube_schedule_enabled
+        self.youtube_schedule_date = youtube_schedule_date
+        self.youtube_schedule_time = youtube_schedule_time
+        self.youtube_scheduled_time = youtube_scheduled_time
+        self.youtube_default_tags = youtube_default_tags
         self._dubber: Optional[Any] = None
         self._stop_requested = False
         self._failed_urls: List[str] = []
@@ -231,6 +249,46 @@ class DownloadWorker(QThread):
                                             self._log(f"[TIKTOK AUTO] ⏳ Còn {sec_left // 60} phút nghỉ trước video tiếp theo...")
                                         import time
                                         time.sleep(1)
+
+                            # Tự động đăng video lên YouTube Shorts nếu được cấu hình
+                            if self.auto_upload_youtube and file_path and os.path.isfile(file_path):
+                                self._log(f"[YOUTUBE AUTO] 🎬 Bắt đầu quy trình tự động đăng YouTube Shorts cho: {os.path.basename(file_path)}")
+                                try:
+                                    from core.youtube_uploader import generate_youtube_metadata, upload_to_youtube
+                                    self._log("[YOUTUBE AUTO] Đang dùng Gemini tạo tiêu đề, mô tả và thẻ tag YouTube...")
+                                    yt_title, yt_desc, yt_tags = generate_youtube_metadata(
+                                        script_content=title,
+                                        api_key=self.gemini_api_key,
+                                        video_title=title or os.path.basename(file_path),
+                                    )
+                                    if self.youtube_default_tags:
+                                        extra_tags = [t.strip() for t in self.youtube_default_tags.split(",") if t.strip()]
+                                        for et in extra_tags:
+                                            if et not in yt_tags:
+                                                yt_tags.append(et)
+
+                                    sched_date = self.youtube_schedule_date if self.youtube_schedule_enabled else None
+                                    sched_time = self.youtube_schedule_time if self.youtube_schedule_enabled else None
+                                    sched_str = f" | Hẹn giờ: {sched_date} lúc {sched_time}" if (sched_date and sched_time) else ""
+                                    self._log(f"[YOUTUBE AUTO] Tiêu đề: {yt_title}")
+                                    self._log(f"[YOUTUBE AUTO] Đang đăng lên YouTube Studio (Chế độ: {self.youtube_privacy}{sched_str})...")
+
+                                    yt_resp = upload_to_youtube(
+                                        video_path=file_path,
+                                        title=yt_title,
+                                        description=yt_desc,
+                                        tags=yt_tags,
+                                        privacy_status=self.youtube_privacy,
+                                        schedule_date=sched_date,
+                                        schedule_time=sched_time,
+                                        scheduled_time=self.youtube_scheduled_time,
+                                        cookies_file_path=self.youtube_cookies_path or "youtube_cookies.txt",
+                                        log_callback=self._log,
+                                    )
+                                    yt_url = yt_resp.get("video_url", yt_resp.get("url", ""))
+                                    self._log(f"[YOUTUBE AUTO] ✅ Đã đăng thành công video lên YouTube Shorts: {yt_url}")
+                                except Exception as yt_err:
+                                    self._log(f"[YOUTUBE AUTO] ⚠ Không thể đăng YouTube: {yt_err}")
 
                             self.item_finished.emit(url, True, file_path)
                             self._log(

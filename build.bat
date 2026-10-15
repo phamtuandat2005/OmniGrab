@@ -41,16 +41,22 @@ if errorlevel 1 (
 )
 echo.
 
+if "%~1"=="1" goto BUILD_STANDARD
+if "%~1"=="2" goto BUILD_NUITKA
+if "%~1"=="3" goto BUILD_PYARMOR
+if "%~1"=="auto" goto BUILD_STANDARD
+
 :MENU
 echo ========================================================
 echo CHON PHUONG THUC DONG GOI:
 echo ========================================================
-echo 1. Build tieu chuan (PyInstaller) - Nhanh nhat, khong bao mat
+echo 1. Build tieu chuan (PyInstaller) - Nhanh nhat, on dinh nhat [Mac dinh]
 echo 2. Build bao mat Nuitka (C++) - Bao mat cao, can trinh bien dich C++
 echo 3. Build bao mat PyArmor - Lam roi ma nguon
 echo 0. Thoat
 echo ========================================================
-set /p choice="Nhap lua chon cua ban (0-3): "
+set choice=1
+set /p choice="Nhap lua chon cua ban (0-3) [Nhan Enter de chon 1]: "
 
 if "%choice%"=="1" goto BUILD_STANDARD
 if "%choice%"=="2" goto BUILD_NUITKA
@@ -66,7 +72,7 @@ goto MENU
 echo.
 echo Dang dong goi tieu chuan voi PyInstaller (--onefile)...
 pip install pyinstaller --quiet --upgrade
-pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon="%~dp0assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "playwright" --collect-all "faster_whisper" --collect-all "ctranslate2" --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" main.py
+pyinstaller --noconfirm --clean --noconsole --onefile --name "OmniGrab" --icon="%~dp0assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all "playwright" --collect-all "faster_whisper" --collect-all "ctranslate2" --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --collect-all "deep_translator" --collect-all "cryptography" --collect-all "bs4" --collect-all "av" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" --hidden-import "requests" main.py
 if errorlevel 1 (
     echo [LOI] Dong goi that bai!
     pause

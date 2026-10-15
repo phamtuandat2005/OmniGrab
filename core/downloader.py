@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -259,10 +260,39 @@ def _get_facebook_opts() -> Dict[str, Any]:
     }
 
 
+def is_cenc_drm_encrypted(file_path: str) -> bool:
+    """
+    Kiểm tra xem file MP4 có bị mã hóa bản quyền DRM (ISO Common Encryption - CENC) hay không.
+    Nội dung phim bộ/phim ngắn có bản quyền trên Douyin thường được ByteDance mã hóa bằng CENC (encv/enca).
+    """
+    if not file_path or not os.path.isfile(file_path):
+        return False
+    try:
+        size = os.path.getsize(file_path)
+        if size < 512:
+            return False
+        with open(file_path, "rb") as f:
+            head = f.read(min(size, 1048576))
+            if (b"encv" in head or b"enca" in head) and (b"cenc" in head or b"sinf" in head):
+                return True
+            if size > 1048576:
+                seek_pos = max(0, size - 524288)
+                f.seek(seek_pos)
+                tail = f.read()
+                if (b"encv" in tail or b"enca" in tail) and (b"cenc" in tail or b"sinf" in tail):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def ensure_h264_compatibility(video_path: str, ffmpeg_dir: str = "") -> None:
     """
-    Kiểm tra nếu video là HEVC (H.265) thì tự động chuyển về H.264 tương thích mọi máy Windows.
-    Đảm bảo video xem được trên Windows Media Player mặc định không bị lỗi codec.
+    Đảm bảo video tương thích 100% với Windows Media Player, Movies & TV và Windows Explorer:
+    1. Kiểm tra codec video bằng ffmpeg (không phụ thuộc vào ffprobe).
+    2. Nếu codec là HEVC/H.265, VP9, AV1: Tự động chuyển đổi sang H.264 (AVC) + AAC.
+    3. Đặt moov atom lên đầu file (+faststart) và khử timestamp âm (-avoid_negative_ts make_zero)
+       để Windows Explorer hiển thị thumbnail ngay lập tức và phát không bị lỗi 0xC00D36C4.
     """
     if not video_path or not os.path.isfile(video_path):
         return
@@ -273,37 +303,39 @@ def ensure_h264_compatibility(video_path: str, ffmpeg_dir: str = "") -> None:
 
     temp_path = ""
     try:
-        # Tự động tìm đường dẫn ffprobe / ffmpeg
         if not ffmpeg_dir:
             ffmpeg_dir = _detect_ffmpeg()
 
-        ffprobe_bin = (
-            os.path.join(ffmpeg_dir, "ffprobe.exe")
-            if ffmpeg_dir and os.path.isfile(os.path.join(ffmpeg_dir, "ffprobe.exe"))
-            else "ffprobe"
-        )
         ffmpeg_bin = (
             os.path.join(ffmpeg_dir, "ffmpeg.exe")
             if ffmpeg_dir and os.path.isfile(os.path.join(ffmpeg_dir, "ffmpeg.exe"))
             else "ffmpeg"
         )
 
-        # Lấy thông tin codec video bằng ffprobe
-        cmd_probe = f'"{ffprobe_bin}" -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "{video_path}"'
-        codec = subprocess.check_output(
+        # Lấy codec video từ ffmpeg -i
+        cmd_probe = f'"{ffmpeg_bin}" -hide_banner -i "{video_path}"'
+        proc = subprocess.run(
             cmd_probe,
             shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=20,
-        ).strip().lower()
+            errors="replace",
+            timeout=25,
+        )
+        stderr_text = proc.stderr or ""
+        match = re.search(r"Stream #\d+:\d+.*?: Video: ([a-zA-Z0-9_\-]+)", stderr_text)
+        codec = match.group(1).lower() if match else ""
 
-        if codec in ["hevc", "h265"]:
-            base, ext = os.path.splitext(video_path)
-            temp_path = f"{base}_h264{ext}"
+        base, ext = os.path.splitext(video_path)
+        temp_path = f"{base}_compat{ext}"
+
+        if codec in ["hevc", "h265", "vp9", "av1"]:
+            # Transcode sang H.264 + AAC để tương thích mọi phiên bản Windows
             cmd_convert = (
                 f'"{ffmpeg_bin}" -y -i "{video_path}" '
-                f'-c:v libx264 -preset fast -crf 22 -c:a copy "{temp_path}"'
+                f'-c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k '
+                f'-avoid_negative_ts make_zero -movflags +faststart "{temp_path}"'
             )
             subprocess.run(
                 cmd_convert,
@@ -313,10 +345,26 @@ def ensure_h264_compatibility(video_path: str, ffmpeg_dir: str = "") -> None:
                 stderr=subprocess.DEVNULL,
                 timeout=600,
             )
-
-            # Ghi đè file cũ
-            if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+            if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 1024:
                 os.replace(temp_path, video_path)
+
+        elif codec == "h264":
+            # Nếu đã là H.264, remux nhanh (+faststart) để Windows Explorer load được thumbnail
+            cmd_remux = (
+                f'"{ffmpeg_bin}" -y -i "{video_path}" '
+                f'-c copy -avoid_negative_ts make_zero -movflags +faststart "{temp_path}"'
+            )
+            subprocess.run(
+                cmd_remux,
+                shell=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            )
+            if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 1024:
+                os.replace(temp_path, video_path)
+
     except Exception:
         # Nếu có lỗi thì dọn dẹp file tạm (nếu có) và giữ nguyên file gốc
         if temp_path and os.path.isfile(temp_path):
@@ -331,7 +379,6 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
     Tải trực tiếp video hoặc album ảnh Douyin không logo qua CDN.
     Khắc phục triệt để lỗi 403 Forbidden của yt-dlp đối với Douyin.
     """
-    import re
     import requests as _requests
 
     result: dict[str, Any] = {
@@ -369,7 +416,7 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
     # 2. Lấy thông tin chi tiết qua API Douyin (ABogusManager + x-tt-argus)
     try:
         import core.f2_patch
-        from core.channel_scrapers import parse_cookie_file
+        from core.channel_scrapers import parse_cookie_file, extract_douyin_title
         # pyrefly: ignore [missing-import]
         from f2.apps.douyin.utils import ABogusManager, TokenManager
         # pyrefly: ignore [missing-import]
@@ -422,7 +469,7 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
 
     # 3. Chuẩn bị thư mục và tên file
     os.makedirs(config.output_dir, exist_ok=True)
-    raw_title = detail.get("desc") or f"douyin_{aweme_id}"
+    raw_title = extract_douyin_title(detail, aweme_id)
     safe_title = "".join(c for c in raw_title if c not in '\\/:*?"<>|\r\n').strip()[:60] or f"douyin_{aweme_id}"
     result["title"] = safe_title
 
@@ -566,6 +613,7 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
 
         part_file = out_file + ".part"
         download_success = False
+        detected_drm = False
 
         for t_url in candidate_urls:
             try:
@@ -599,7 +647,17 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
                             except Exception:
                                 pass
                         continue
+
                     if os.path.isfile(part_file) and os.path.getsize(part_file) > 1024:
+                        # Kiểm tra xem file có bị mã hóa bản quyền DRM CENC (encv/enca/sinf) hay không
+                        if is_cenc_drm_encrypted(part_file):
+                            detected_drm = True
+                            try:
+                                os.remove(part_file)
+                            except Exception:
+                                pass
+                            continue
+
                         if os.path.isfile(out_file):
                             try:
                                 os.remove(out_file)
@@ -617,7 +675,18 @@ def download_douyin_video(config: DownloadConfig, url: str) -> dict[str, Any]:
                 continue
 
         if not download_success:
-            result["error"] = "Không thể tải luồng video Douyin từ CDN (kết nối bị gián đoạn hoặc link hết hạn)."
+            if detected_drm:
+                mix_info = detail.get("mix_info") or detail.get("series_info") or {}
+                m_name = mix_info.get("mix_name") or mix_info.get("name") or ""
+                ep = mix_info.get("statis", {}).get("current_episode") or ""
+                extra = f" [{m_name} - Tập {ep}]" if m_name and ep else (f" [{m_name}]" if m_name else "")
+                result["error"] = (
+                    f"Video thuộc danh mục phim ngắn/phim bộ có bản quyền DRM của Douyin{extra}. "
+                    "ByteDance khóa bản quyền DRM (mã hóa CENC / encv), "
+                    "không thể phát được trên các trình phát thông thường (như Windows Media Player)."
+                )
+            else:
+                result["error"] = "Không thể tải luồng video Douyin từ CDN (kết nối bị gián đoạn hoặc link hết hạn)."
             return result
 
         # Nếu audio_only và đã tải MP4: convert sang mp3

@@ -417,7 +417,7 @@ class ScanChannelWorker(QThread):
 
         Args:
             channel_url: URL kênh / trang cá nhân cần quét.
-            max_videos: Số video tối đa cần quét từ nguồn.
+            max_videos: Số video tối đa cần quét; 0 nghĩa là quét mọi trang nguồn trả về.
             cookie_file: Đường dẫn file cookie (tùy chọn).
             min_views: Số lượt xem tối thiểu (0 = không lọc).
             min_likes: Số lượt thích tối thiểu (0 = không lọc).
@@ -476,35 +476,111 @@ class ScanChannelWorker(QThread):
 
     # ── Kiểm tra bộ lọc ──
 
+    @staticmethod
+    def _parse_count_value(val) -> int:
+        """Chuyển chuỗi rút gọn (11K, 1.8K, 1.2M, 500) hoặc số int thành số nguyên."""
+        if val is None:
+            return 0
+        if isinstance(val, (int, float)):
+            return int(val)
+        s = str(val).strip().upper().replace(",", ".")
+        import re
+        m = re.match(r"^([\d.]+)\s*([KMB]?)$", s)
+        if m:
+            num, unit = m.groups()
+            try:
+                n = float(num)
+                if unit == "K":
+                    return int(n * 1_000)
+                elif unit == "M":
+                    return int(n * 1_000_000)
+                elif unit == "B":
+                    return int(n * 1_000_000_000)
+                return int(n)
+            except ValueError:
+                return 0
+        return 0
+
+    @staticmethod
+    def _parse_duration_seconds(entry: dict) -> Optional[int]:
+        """Trích xuất thời lượng tính theo giây từ entry."""
+        dur = entry.get("duration_sec")
+        if dur is not None and str(dur).isdigit() and int(dur) > 0:
+            return int(dur)
+        val = entry.get("duration")
+        if val is None or val == "--:--":
+            return None
+        if isinstance(val, (int, float)):
+            return int(val)
+        s = str(val).strip()
+        if ":" in s:
+            parts = s.split(":")
+            try:
+                if len(parts) == 2:
+                    return int(parts[0]) * 60 + int(parts[1])
+                elif len(parts) == 3:
+                    return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            except ValueError:
+                return None
+        try:
+            return int(float(s))
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_upload_date(entry: dict):
+        """Phân tích ngày đăng thành datetime.date."""
+        from datetime import date
+        raw = str(entry.get("upload_date_raw") or "").strip()
+        if len(raw) == 8 and raw.isdigit():
+            try:
+                return date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
+            except Exception:
+                pass
+        ud = str(entry.get("upload_date") or "").strip()
+        if len(ud) == 8 and ud.isdigit():
+            try:
+                return date(int(ud[:4]), int(ud[4:6]), int(ud[6:8]))
+            except Exception:
+                pass
+        if "/" in ud:
+            parts = ud.split("/")
+            if len(parts) == 3:
+                try:
+                    return date(int(parts[2]), int(parts[1]), int(parts[0]))
+                except Exception:
+                    pass
+        return None
+
     def _passes_filters(self, entry: dict) -> bool:
         """Kiểm tra xem entry có đạt tất cả tiêu chí lọc không."""
         from datetime import date, timedelta
 
         # Lượt xem
-        views = entry.get("view_count") or entry.get("views") or 0
-        try:
-            views = int(views)
-        except (ValueError, TypeError):
-            views = 0
-        if self._min_views > 0 and views < self._min_views:
-            return False
+        if self._min_views > 0:
+            views = (
+                entry.get("views_raw")
+                or entry.get("view_count")
+                or self._parse_count_value(entry.get("views"))
+                or 0
+            )
+            if views < self._min_views:
+                return False
 
         # Lượt thích
-        likes = entry.get("like_count") or entry.get("likes") or 0
-        try:
-            likes = int(likes)
-        except (ValueError, TypeError):
-            likes = 0
-        if self._min_likes > 0 and likes < self._min_likes:
-            return False
+        if self._min_likes > 0:
+            likes = (
+                entry.get("likes_raw")
+                or entry.get("like_count")
+                or self._parse_count_value(entry.get("likes"))
+                or 0
+            )
+            if likes < self._min_likes:
+                return False
 
         # Thời lượng
         if self._duration_filter != self.DURATION_ALL:
-            dur = entry.get("duration")
-            try:
-                dur = int(dur) if dur is not None else None
-            except (ValueError, TypeError):
-                dur = None
+            dur = self._parse_duration_seconds(entry)
             if self._duration_filter == self.DURATION_SHORT:
                 if dur is None or dur >= 60:
                     return False
@@ -514,22 +590,13 @@ class ScanChannelWorker(QThread):
 
         # Ngày đăng
         if self._date_filter != self.DATE_ALL:
-            upload_date = entry.get("upload_date") or ""
-            if len(upload_date) == 8:
-                try:
-                    vid_date = date(
-                        int(upload_date[:4]),
-                        int(upload_date[4:6]),
-                        int(upload_date[6:8]),
-                    )
-                    days_map = {self.DATE_3DAYS: 3, self.DATE_7DAYS: 7, self.DATE_30DAYS: 30}
-                    cutoff = date.today() - timedelta(days=days_map.get(self._date_filter, 9999))
-                    if vid_date < cutoff:
-                        return False
-                except Exception:
-                    pass  # Không lọc nếu không parse được
+            vid_date = self._parse_upload_date(entry)
+            if vid_date:
+                days_map = {self.DATE_3DAYS: 3, self.DATE_7DAYS: 7, self.DATE_30DAYS: 30}
+                cutoff = date.today() - timedelta(days=days_map.get(self._date_filter, 9999))
+                if vid_date < cutoff:
+                    return False
             else:
-                # Không có ngày đăng → loại bỏ khi đang lọc theo ngày
                 return False
 
         return True
@@ -564,7 +631,9 @@ class ScanChannelWorker(QThread):
             passed += 1
 
             # Xây dựng URL & metadata
-            video_url = entry.get("url") or entry.get("webpage_url", "")
+            # Với metadata đầy đủ, yt-dlp có thể đặt `url` thành URL media trực tiếp.
+            # Bảng cần URL trang video để mở/copy, nên ưu tiên webpage_url.
+            video_url = entry.get("webpage_url") or entry.get("original_url") or entry.get("url", "")
             video_id = entry.get("id", "")
             title = entry.get("title") or entry.get("fulltitle") or f"Video #{idx + 1}"
 
@@ -722,9 +791,8 @@ class ScanChannelWorker(QThread):
                 "Chrome/120.0.0.0 Safari/537.36"
             )
 
+        is_youtube = "youtube.com" in url_lower or "youtu.be" in url_lower
         ydl_opts: dict = {
-            "extract_flat": "in_playlist",
-            "playlistend": self._max_videos,
             "quiet": True,
             "no_warnings": True,
             "no_color": True,
@@ -734,6 +802,20 @@ class ScanChannelWorker(QThread):
                 "User-Agent": ua,
             },
         }
+
+        if is_youtube:
+            # Playlist/channel ở chế độ flat thường chỉ có title/view_count,
+            # thiếu like_count, duration và upload_date. Để yt-dlp phân giải
+            # từng video nhằm lấy metadata đầy đủ cho bảng và bộ lọc.
+            self.scan_progress.emit("Đang lấy metadata chi tiết cho video YouTube...")
+        else:
+            # Giữ chế độ nhanh cho các extractor khác; không phải nguồn nào
+            # cũng cho phép phân giải từng video trong lúc quét danh sách.
+            ydl_opts["extract_flat"] = "in_playlist"
+
+        # 0 là chế độ All: không đặt playlistend để yt-dlp duyệt toàn bộ playlist.
+        if self._max_videos > 0:
+            ydl_opts["playlistend"] = self._max_videos
 
         if ffmpeg_dir:
             ydl_opts["ffmpeg_location"] = ffmpeg_dir
@@ -763,7 +845,7 @@ class ScanChannelWorker(QThread):
                     if entry is None:
                         continue
                     collected.append(entry)
-                    if i + 1 >= self._max_videos:
+                    if self._max_videos > 0 and len(collected) >= self._max_videos:
                         break
 
                 self._process_and_emit(collected)

@@ -32,6 +32,7 @@ from PyQt6.QtGui import (
     QGuiApplication,
     QIcon,
     QKeySequence,
+    QIntValidator,
     QTextCursor,
 )
 # pyrefly: ignore [missing-import]
@@ -51,6 +52,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMenuBar,
     QMessageBox,
     QPlainTextEdit,
@@ -1166,15 +1168,21 @@ class MainWindow(QMainWindow):
         )
         url_row.addWidget(self._channel_url_input, 1)
 
-        lbl_max = QLabel("Tối đa:")
+        lbl_max = QLabel("Số lượng:")
         lbl_max.setStyleSheet(f"color:{COLORS['text_secondary']}; font-size:12px;")
         url_row.addWidget(lbl_max)
 
-        self._max_videos_spinbox = QSpinBox()
-        self._max_videos_spinbox.setRange(1, 1000)
-        self._max_videos_spinbox.setValue(50)
-        self._max_videos_spinbox.setFixedWidth(80)
-        url_row.addWidget(self._max_videos_spinbox)
+        self._scan_limit_combo = QComboBox()
+        self._scan_limit_combo.setEditable(True)
+        self._scan_limit_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._scan_limit_combo.addItem("All")
+        self._scan_limit_combo.setCurrentText("50")
+        self._scan_limit_combo.setValidator(QIntValidator(1, 1000000, self._scan_limit_combo))
+        self._scan_limit_combo.setFixedWidth(100)
+        self._scan_limit_combo.setToolTip(
+            "Nhập số video tối đa cần quét hoặc mở danh sách để chọn All. All tiếp tục phân trang đến khi nguồn không còn trả video."
+        )
+        url_row.addWidget(self._scan_limit_combo)
 
         lbl_vid = QLabel("video")
         lbl_vid.setStyleSheet(f"color:{COLORS['text_secondary']}; font-size:12px;")
@@ -1246,7 +1254,7 @@ class MainWindow(QMainWindow):
         self._result_table = QTableWidget()
         self._result_table.setColumnCount(7)
         self._result_table.setHorizontalHeaderLabels([
-            "✓", "Tiêu đề video", "Lượt xem", "Lượt thích", "Thời lượng", "Ngày đăng", "URL"
+            "✓", "Tiêu đề video", "Lượt xem", "Lượt thích", "Thời lượng", "Ngày đăng", "URL (Nhấp để mở)"
         ])
         h = self._result_table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -1264,8 +1272,12 @@ class MainWindow(QMainWindow):
         self._result_table.verticalHeader().setVisible(False)
         self._result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._result_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._result_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._result_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._result_table.setAlternatingRowColors(True)
+        self._result_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._result_table.customContextMenuRequested.connect(self._on_table_context_menu)
+        self._result_table.cellClicked.connect(self._on_table_cell_clicked)
+        self._result_table.cellDoubleClicked.connect(self._on_table_cell_double_clicked)
         rl.addWidget(self._result_table, 1)
 
         # Nút chọn + xuất
@@ -1453,6 +1465,11 @@ class MainWindow(QMainWindow):
         self._filter_date.addItems(["Tất cả", "3 ngày qua", "7 ngày qua", "30 ngày qua"])
         self._filter_date.setMinimumWidth(150)
         layout.addWidget(self._filter_date, 1, 3)
+
+        self._filter_min_views.valueChanged.connect(self._on_viral_filter_changed)
+        self._filter_min_likes.valueChanged.connect(self._on_viral_filter_changed)
+        self._filter_duration.currentIndexChanged.connect(self._on_viral_filter_changed)
+        self._filter_date.currentIndexChanged.connect(self._on_viral_filter_changed)
 
         layout.setColumnStretch(4, 1)
         return grp
@@ -2187,6 +2204,16 @@ class MainWindow(QMainWindow):
         if self._is_scanning:
             return
 
+        limit_text = self._scan_limit_combo.currentText().strip()
+        is_all = limit_text.casefold() == "all"
+        if is_all:
+            max_videos = 0
+        elif limit_text.isdigit() and 0 < int(limit_text) <= 1000000:
+            max_videos = int(limit_text)
+        else:
+            QMessageBox.warning(self, "Số lượng video không hợp lệ", "Nhập số nguyên từ 1 đến 1.000.000 hoặc chọn All.")
+            return
+
         # Thử quét trước: Nếu đã nạp Cookie thì dùng, nếu chưa có thì quét trực tiếp
         # Chỉ khi nào quét không được mới hiện thông báo yêu cầu Cookie trong _on_scan_error
         if self.cookies_path:
@@ -2207,7 +2234,6 @@ class MainWindow(QMainWindow):
             f"color:{COLORS['accent_orange']}; font-size:12px; font-weight:600;"
         )
 
-        max_videos = self._max_videos_spinbox.value()
         min_views = self._filter_min_views.value()
         min_likes = self._filter_min_likes.value()
         duration_filter = self._filter_duration.currentText()
@@ -2240,7 +2266,8 @@ class MainWindow(QMainWindow):
         if date_filter != "Tất cả":
             parts.append(date_filter)
         finfo = f" | Lọc: {', '.join(parts)}" if parts else ""
-        self._append_log("HỆ THỐNG", f"Quét kênh: {url} (max {max_videos} video{finfo})")
+        limit_label = "All video khả dụng" if is_all else f"tối đa {max_videos} video"
+        self._append_log("HỆ THỐNG", f"Quét kênh: {url} ({limit_label}{finfo})")
 
     def _on_scan_progress(self, message: str) -> None:
         self._scan_status_label.setText(message)
@@ -2255,15 +2282,23 @@ class MainWindow(QMainWindow):
         chk = QTableWidgetItem()
         chk.setCheckState(Qt.CheckState.Checked)
         chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        chk.setData(Qt.ItemDataRole.UserRole, video)
         self._result_table.setItem(row, 0, chk)
 
         ti = QTableWidgetItem(video.get("title", ""))
-        ti.setToolTip(video.get("title", ""))
+        ti.setToolTip(f"{video.get('title', '')}\n\n💡 Nhấp đúp chuột để mở xem video này trên trình duyệt.")
         self._result_table.setItem(row, 1, ti)
 
         vi = QTableWidgetItem(video.get("views", "--"))
         vi.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         vi.setForeground(QColor("#38bdf8"))
+        if str(video.get("views", "")).startswith("~"):
+            vi.setToolTip(
+                f"Lượt xem ước tính: {video.get('views', '')}\n"
+                f"(Douyin bảo mật và không công khai lượt xem gốc trên Web API).\n"
+                f"💡 Con số này được tính tự động từ {video.get('likes_raw', 0):,} lượt thích với tỷ lệ tương tác chuẩn ~20x.\n"
+                f"Bạn cũng có thể xem số lượt thích thực tế ở cột Lượt thích bên cạnh."
+            )
         self._result_table.setItem(row, 2, vi)
 
         li = QTableWidgetItem(video.get("likes", "--"))
@@ -2280,7 +2315,13 @@ class MainWindow(QMainWindow):
         self._result_table.setItem(row, 5, dai)
 
         ui = QTableWidgetItem(video.get("url", ""))
-        ui.setToolTip(video.get("url", ""))
+        ui_font = ui.font()
+        ui_font.setUnderline(True)
+        ui.setFont(ui_font)
+        ui.setToolTip(
+            f"🌐 Nhấp vào đây hoặc nhấp đúp để mở video. Với TikTok, ứng dụng thử trình phát nhúng chính thức trước.\n"
+            f"Liên kết gốc: {video.get('url', '')}"
+        )
         ui.setForeground(QColor(COLORS["accent_blue"]))
         self._result_table.setItem(row, 6, ui)
 
@@ -2362,12 +2403,99 @@ class MainWindow(QMainWindow):
         self._scan_worker = None
         self._status_bar.showMessage("Trạng thái: Sẵn sàng")
 
+    def _on_viral_filter_changed(self) -> None:
+        """Lọc động tức thì danh sách video hiển thị trong bảng khi người dùng thay đổi bộ lọc Viral."""
+        min_views = self._filter_min_views.value()
+        min_likes = self._filter_min_likes.value()
+        duration_filter = self._filter_duration.currentText()
+        date_filter = self._filter_date.currentText()
+
+        from datetime import date, timedelta
+        days_map = {"3 ngày qua": 3, "7 ngày qua": 7, "30 ngày qua": 30}
+        cutoff_date = (date.today() - timedelta(days=days_map[date_filter])) if date_filter in days_map else None
+
+        total_rows = self._result_table.rowCount()
+        if total_rows == 0:
+            return
+
+        from core.worker import ScanChannelWorker
+        visible_count = 0
+        self._result_table.blockSignals(True)
+        for r in range(total_rows):
+            chk = self._result_table.item(r, 0)
+            if not chk:
+                continue
+            video = chk.data(Qt.ItemDataRole.UserRole)
+            if not video and r < len(self._scanned_videos):
+                video = self._scanned_videos[r]
+
+            passes = True
+            if video:
+                # 1. Lượt xem
+                if min_views > 0:
+                    v_raw = video.get("views_raw", 0)
+                    if not v_raw and video.get("view_count"):
+                        v_raw = video.get("view_count")
+                    if not v_raw and video.get("views"):
+                        v_raw = ScanChannelWorker._parse_count_value(video.get("views"))
+                    try:
+                        v_raw = int(v_raw)
+                    except Exception:
+                        v_raw = 0
+                    if v_raw < min_views:
+                        passes = False
+
+                # 2. Lượt thích
+                if passes and min_likes > 0:
+                    l_raw = video.get("likes_raw", 0)
+                    if not l_raw and video.get("like_count"):
+                        l_raw = video.get("like_count")
+                    if not l_raw and video.get("likes"):
+                        l_raw = ScanChannelWorker._parse_count_value(video.get("likes"))
+                    try:
+                        l_raw = int(l_raw)
+                    except Exception:
+                        l_raw = 0
+                    if l_raw < min_likes:
+                        passes = False
+
+                # 3. Thời lượng
+                if passes and duration_filter != "Tất cả":
+                    dur_sec = ScanChannelWorker._parse_duration_seconds(video)
+                    if duration_filter == "Dưới 60 giây (Shorts/Reels)":
+                        if dur_sec is None or dur_sec >= 60:
+                            passes = False
+                    elif duration_filter == "Trên 60 giây":
+                        if dur_sec is None or dur_sec < 60:
+                            passes = False
+
+                # 4. Ngày đăng
+                if passes and cutoff_date is not None:
+                    v_date = ScanChannelWorker._parse_upload_date(video)
+                    if not v_date or v_date < cutoff_date:
+                        passes = False
+
+            self._result_table.setRowHidden(r, not passes)
+            if passes:
+                visible_count += 1
+                chk.setCheckState(Qt.CheckState.Checked)
+            else:
+                chk.setCheckState(Qt.CheckState.Unchecked)
+
+        self._result_table.blockSignals(False)
+        if visible_count < total_rows:
+            self._lbl_scan_count.setText(f"{visible_count}/{total_rows} video")
+        else:
+            self._lbl_scan_count.setText(f"{total_rows} video")
+        self._update_selected_count()
+
     def _on_select_all(self) -> None:
         self._result_table.blockSignals(True)
         for r in range(self._result_table.rowCount()):
-            it = self._result_table.item(r, 0)
-            if it:
-                it.setCheckState(Qt.CheckState.Checked)
+            if not self._result_table.isRowHidden(r):
+                it = self._result_table.item(r, 0)
+                if it:
+                    it.setCheckState(Qt.CheckState.Checked)
         self._result_table.blockSignals(False)
         self._update_selected_count()
 
@@ -2384,10 +2512,114 @@ class MainWindow(QMainWindow):
         if item.column() == 0:
             self._update_selected_count()
 
+    def _on_table_cell_clicked(self, row: int, col: int) -> None:
+        """Nhấp vào ô trong bảng. Nếu nhấp vào cột URL (cột 6) sẽ mở video ngay."""
+        if col == 6:
+            self._open_video_url_at_row(row)
+
+    def _on_table_cell_double_clicked(self, row: int, col: int) -> None:
+        """Nhấp đúp chuột vào bất kỳ ô nào trên dòng (trừ checkbox) để mở video kiểm tra."""
+        if col != 0:
+            self._open_video_url_at_row(row)
+
+    def _open_video_url_at_row(self, row: int) -> None:
+        """Mở video; với TikTok ưu tiên player nhúng chính thức, giữ URL gốc làm fallback."""
+        chk = self._result_table.item(row, 0)
+        url = ""
+        video = None
+        if chk:
+            video = chk.data(Qt.ItemDataRole.UserRole)
+            if video:
+                url = video.get("url", "").strip()
+
+        if not url:
+            url_item = self._result_table.item(row, 6)
+            if url_item:
+                url = url_item.text().strip()
+
+        if url and (url.startswith("http://") or url.startswith("https://")):
+            player_url = self._get_tiktok_player_url(url, video or {})
+            QDesktopServices.openUrl(QUrl(player_url))
+            label = "trình phát TikTok" if player_url != url else "video trong trình duyệt"
+            self._status_bar.showMessage(f"🌐 Đang mở {label}: {player_url}", 5000)
+
+    @staticmethod
+    def _get_tiktok_player_url(url: str, video: Optional[Dict[str, Any]] = None) -> str:
+        """Tạo URL player nhúng chính thức cho TikTok; nền tảng khác giữ URL ban đầu."""
+        if "tiktok.com" not in (url or "").lower():
+            return url
+
+        video_id = str((video or {}).get("id") or "").strip()
+        if not video_id:
+            path_parts = QUrl(url).path().rstrip("/").split("/")
+            video_id = path_parts[-1] if path_parts else ""
+
+        if video_id.isdigit():
+            return f"https://www.tiktok.com/player/v1/{video_id}"
+        return url
+
+    def _on_table_context_menu(self, pos) -> None:
+        """Menu chuột phải trên bảng kết quả để mở video hoặc sao chép thông tin."""
+        item = self._result_table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        chk_item = self._result_table.item(row, 0)
+        video = chk_item.data(Qt.ItemDataRole.UserRole) if chk_item else None
+        url = (video.get("url") if video else "") or (self._result_table.item(row, 6).text().strip() if self._result_table.item(row, 6) else "")
+        title = (video.get("title") if video else "") or (self._result_table.item(row, 1).text().strip() if self._result_table.item(row, 1) else "")
+
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {COLORS['bg_card']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 6px;
+                padding: 4px;
+                font-size: 12px;
+            }}
+            QMenu::item {{
+                padding: 6px 20px 6px 10px;
+                border-radius: 4px;
+            }}
+            QMenu::item:selected {{
+                background-color: {COLORS['accent_blue']};
+                color: #ffffff;
+            }}
+        """)
+
+        act_open = menu.addAction("🌐  Mở video (TikTok dùng player nhúng)")
+        act_open_original = menu.addAction("↗  Mở URL gốc của video")
+        menu.addSeparator()
+        act_copy_url = menu.addAction("📋  Sao chép liên kết URL")
+        act_copy_title = menu.addAction("📝  Sao chép tiêu đề video")
+        menu.addSeparator()
+        is_checked = chk_item and chk_item.checkState() == Qt.CheckState.Checked
+        act_toggle = menu.addAction("☐  Bỏ chọn video này" if is_checked else "☑  Tích chọn video này")
+
+        action = menu.exec(self._result_table.viewport().mapToGlobal(pos))
+        if action == act_open:
+            self._open_video_url_at_row(row)
+        elif action == act_open_original and url:
+            QDesktopServices.openUrl(QUrl(url))
+            self._status_bar.showMessage(f"🌐 Đang mở URL gốc: {url}", 5000)
+        elif action == act_copy_url and url:
+            QApplication.clipboard().setText(url)
+            self._status_bar.showMessage(f"Đã sao chép URL: {url}", 3000)
+        elif action == act_copy_title and title:
+            QApplication.clipboard().setText(title)
+            self._status_bar.showMessage("Đã sao chép tiêu đề video", 3000)
+        elif action == act_toggle and chk_item:
+            new_state = Qt.CheckState.Unchecked if is_checked else Qt.CheckState.Checked
+            chk_item.setCheckState(new_state)
+            self._update_selected_count()
+
     def _update_selected_count(self) -> None:
         count = sum(
             1 for r in range(self._result_table.rowCount())
-            if self._result_table.item(r, 0)
+            if not self._result_table.isRowHidden(r)
+            and self._result_table.item(r, 0)
             and self._result_table.item(r, 0).checkState() == Qt.CheckState.Checked
         )
         self._lbl_selected_count.setText(f"Đã chọn: {count} video")
@@ -2397,8 +2629,17 @@ class MainWindow(QMainWindow):
         )
 
     def _on_export_csv(self) -> None:
-        if not self._scanned_videos:
-            QMessageBox.warning(self, "Thông báo", "Không có dữ liệu. Hãy quét kênh trước.")
+        export_videos = []
+        for r in range(self._result_table.rowCount()):
+            if not self._result_table.isRowHidden(r):
+                chk = self._result_table.item(r, 0)
+                if chk and chk.data(Qt.ItemDataRole.UserRole):
+                    export_videos.append(chk.data(Qt.ItemDataRole.UserRole))
+                elif r < len(self._scanned_videos):
+                    export_videos.append(self._scanned_videos[r])
+
+        if not export_videos:
+            QMessageBox.warning(self, "Thông báo", "Không có dữ liệu video phù hợp để xuất.")
             return
         default = os.path.join(
             self.output_dir, f"omni_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -2416,13 +2657,13 @@ class MainWindow(QMainWindow):
                     extrasaction="ignore",
                 )
                 w.writeheader()
-                w.writerows(self._scanned_videos)
+                w.writerows(export_videos)
             self._append_log(
                 "HỆ THỐNG",
-                f"Xuất {len(self._scanned_videos)} video ra CSV: {os.path.basename(path)}"
+                f"Xuất {len(export_videos)} video ra CSV: {os.path.basename(path)}"
             )
             QMessageBox.information(
-                self, "Thành công", f"Đã xuất {len(self._scanned_videos)} video ra:\n{path}"
+                self, "Thành công", f"Đã xuất {len(export_videos)} video ra:\n{path}"
             )
         except Exception as e:
             QMessageBox.critical(self, "Lỗi", f"Không thể ghi file CSV:\n{e}")
@@ -2469,6 +2710,8 @@ class MainWindow(QMainWindow):
 
         urls = []
         for r in range(self._result_table.rowCount()):
+            if self._result_table.isRowHidden(r):
+                continue
             chk = self._result_table.item(r, 0)
             url_item = self._result_table.item(r, 6)
             if chk and url_item and chk.checkState() == Qt.CheckState.Checked:

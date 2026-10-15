@@ -119,6 +119,53 @@ def _fmt_upload_date(ts) -> tuple[str, str]:
         return "--/--/----", ""
 
 
+
+def extract_douyin_title(detail: dict, aweme_id: str = "") -> str:
+    """
+    Trích xuất tiêu đề sạch và đầy đủ từ chi tiết video Douyin (aweme_detail).
+    Hỗ trợ:
+    - Video ngắn thông thường (desc / caption)
+    - Phim ngắn / Phim bộ / Drama series (mix_info / series_info: tên phim + số tập)
+    - Share info (share_title / share_desc)
+    """
+    if not isinstance(detail, dict):
+        return f"douyin_{aweme_id}" if aweme_id else "douyin_video"
+
+    # 1. Thử lấy từ desc chính của video
+    desc = str(detail.get("desc") or "").strip()
+    if desc:
+        return desc
+
+    # 2. Nếu là phim ngắn / Series / Hợp tập (mix_info hoặc series_info)
+    mix_info = detail.get("mix_info") or detail.get("series_info") or {}
+    mix_name = str(mix_info.get("mix_name") or mix_info.get("name") or "").strip()
+    if mix_name:
+        cur_ep = (
+            mix_info.get("statis", {}).get("current_episode")
+            or mix_info.get("current_episode")
+            or ""
+        )
+        if cur_ep:
+            return f"{mix_name}_Tap_{cur_ep}"
+        return mix_name
+
+    # 3. Thử lấy từ share_info
+    share_info = detail.get("share_info") or {}
+    stitle = str(share_info.get("share_title") or "").strip()
+    if stitle and not stitle.startswith("http"):
+        return stitle
+    sdesc = str(share_info.get("share_desc") or "").strip()
+    if sdesc and not sdesc.startswith("http"):
+        return sdesc
+
+    # 4. Thử lấy từ tác giả + aweme_id
+    author = detail.get("author", {}).get("nickname") or ""
+    if author:
+        return f"{author}_video_{aweme_id}" if aweme_id else f"{author}_video"
+
+    return f"douyin_{aweme_id}" if aweme_id else "douyin_video"
+
+
 # ═════════════════════════════════════════════════════════════════════
 # 1. BỘ QUÉT KÊNH DOUYIN (DÙNG f2)
 # ═════════════════════════════════════════════════════════════════════
@@ -248,12 +295,15 @@ def scan_douyin_channel(
 
     collected: List[dict] = []
     cursor = 0
-    max_loops = 50
+    # max_videos == 0 biểu thị chế độ All. Giới hạn vòng lặp lớn để tránh
+    # vòng lặp vô hạn nếu Douyin trả cursor sai, đồng thời cho phép tải nhiều
+    # trang hơn giới hạn cũ 50 * 20 video.
+    max_loops = 500 if max_videos <= 0 else 50
     loop_count = 0
 
-    while len(collected) < max_videos and loop_count < max_loops:
+    while (max_videos <= 0 or len(collected) < max_videos) and loop_count < max_loops:
         loop_count += 1
-        page_size = min(max_videos - len(collected), 20)
+        page_size = 20 if max_videos <= 0 else min(max_videos - len(collected), 20)
 
         params = UserPost(
             max_cursor=cursor,
@@ -311,7 +361,7 @@ def scan_douyin_channel(
             if not aid:
                 continue
 
-            desc = item.get("desc") or f"Douyin Video #{aid}"
+            desc = extract_douyin_title(item, aid)
             ctime = item.get("create_time")
             fmt_date, raw_date = _fmt_upload_date(ctime)
 
@@ -338,8 +388,15 @@ def scan_douyin_channel(
             views_raw = int(stats.get("play_count") or 0)
             likes_raw = int(stats.get("digg_count") or 0)
 
-            # Douyin ẩn play_count trên Web API (luôn trả về 0), chỉ công khai lượt thích (digg_count)
-            views_display = _fmt_number(views_raw) if views_raw > 0 else "Ẩn (Douyin)"
+            # Douyin ẩn play_count trên Web API (luôn trả về 0), ước tính dựa trên lượt thích để người dùng lọc/xếp hạng
+            if views_raw > 0:
+                views_display = _fmt_number(views_raw)
+            elif likes_raw > 0:
+                est_views = likes_raw * 25
+                views_raw = est_views
+                views_display = f"~{_fmt_number(est_views)}"
+            else:
+                views_display = "Ẩn (Douyin)"
 
             video_entry = {
                 "id": aid,
@@ -357,9 +414,10 @@ def scan_douyin_channel(
                 "like_count": likes_raw,
             }
             collected.append(video_entry)
-            _log(f"✔ [Douyin] Đã quét ({len(collected)}/{max_videos}): {desc[:40]}...")
+            total_label = "All" if max_videos <= 0 else str(max_videos)
+            _log(f"✔ [Douyin] Đã quét ({len(collected)}/{total_label}): {desc[:40]}...")
 
-            if len(collected) >= max_videos:
+            if max_videos > 0 and len(collected) >= max_videos:
                 break
 
         has_more = data.get("has_more", 0)
@@ -646,52 +704,71 @@ def scan_facebook_channel(
             "Referer": "https://www.facebook.com/",
         }
 
-        resp = cffi_requests.get(
-            target_url,
-            impersonate="chrome120",
-            headers=headers,
-            cookies=cookie_dict if cookie_dict else None,
-            timeout=15,
-        )
+        from urllib.parse import urljoin, urlparse, parse_qs
 
-        if resp.status_code == 200:
+        # Follow continuation links embedded in Facebook responses, not only the first batch.
+        page_queue = [target_url]
+        visited_pages = set()
+        page_limit = 1000 if max_videos <= 0 else max(5, min(1000, (max_videos // 10) + 5))
+        while page_queue and len(visited_pages) < page_limit:
+            page_url = page_queue.pop(0)
+            if page_url in visited_pages:
+                continue
+            visited_pages.add(page_url)
+            resp = cffi_requests.get(
+                page_url, impersonate="chrome120", headers=headers,
+                cookies=cookie_dict if cookie_dict else None, timeout=15,
+            )
+            if resp.status_code != 200:
+                _log(f"[Facebook] Page {len(visited_pages)} returned HTTP {resp.status_code}.")
+                continue
+
             html_text = resp.text
-
-            # 1. Bóc tách JSON scripts có chứa metadata video
             scripts = re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html_text)
-            for s in scripts:
-                if any(kw in s for kw in ["ChannelTabVideo", "all_videos", "_videos", "playable_duration", "play_count"]):
+            for script in scripts:
+                if any(kw in script for kw in ["ChannelTabVideo", "all_videos", "_videos", "playable_duration", "play_count", "play_count_reduced", "aggregated_fb_shorts"]):
                     try:
-                        d = json.loads(s)
-                        _parse_fb_json_objects(d)
+                        _parse_fb_json_objects(json.loads(script))
                     except Exception:
                         pass
 
-            # 2. Bổ sung các video IDs qua regex nếu chưa có
-            for m in re.finditer(r'\"video\":\{\"id\":\"(\d+)\"', html_text):
-                vid = m.group(1)
-                if vid not in seen_ids:
-                    seen_ids.add(vid)
-                    collected_vids.append(vid)
+            for pattern in (
+                r'\"video\":\{"id":"(\d+)"',
+                r'/(?:watch/\?v=|reel/)(\d+)',
+                r'\/videos\/(\d+)',
+            ):
+                for match in re.finditer(pattern, html_text):
+                    vid = match.group(1)
+                    if vid not in seen_ids:
+                        seen_ids.add(vid)
+                        collected_vids.append(vid)
 
-            for m in re.finditer(r'/(?:watch\/\?v=|reel\/)(\d+)', html_text):
-                vid = m.group(1)
-                if vid not in seen_ids:
-                    seen_ids.add(vid)
-                    collected_vids.append(vid)
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_text, "html.parser")
+            for anchor in soup.find_all("a", href=True):
+                href = anchor.get("href", "")
+                if not any(token in href.lower() for token in ("cursor", "after=", "before=", "pagelet", "section_id", "videos")):
+                    continue
+                next_url = urljoin(page_url, href).replace("&amp;", "&")
+                parsed = urlparse(next_url)
+                if parsed.netloc.lower().split(":")[0] not in {"facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com"}:
+                    continue
+                query_keys = {key.lower() for key in parse_qs(parsed.query)}
+                if not query_keys.intersection({"cursor", "after", "before", "pagelet", "section_id", "__a"}):
+                    continue
+                if next_url not in visited_pages and next_url not in page_queue:
+                    page_queue.append(next_url)
 
-            for m in re.finditer(r'\/videos\/(\d+)', html_text):
-                vid = m.group(1)
-                if vid not in seen_ids:
-                    seen_ids.add(vid)
-                    collected_vids.append(vid)
-
-            _log(f"✔ [Facebook] Đã trích xuất {len(collected_vids)} video kèm metadata từ trang.")
+            _log(f"[Facebook] Scanned {len(visited_pages)} pages; found {len(collected_vids)} videos.")
+            if max_videos > 0 and len(collected_vids) >= max_videos:
+                break
+        if page_queue and len(visited_pages) >= page_limit:
+            _log(f"[Facebook] Reached safety limit of {page_limit} pages.")
     except Exception as e:
         _log(f"⚠ [Facebook] curl_cffi cảnh báo: {e}")
 
     # ── Chiến lược 2: Nếu có Cookie và chưa đủ số lượng, quét thêm qua mbasic ──
-    if len(collected_vids) < max_videos and cookie_dict:
+    if (max_videos <= 0 or len(collected_vids) < max_videos) and cookie_dict:
         try:
             import requests
             # pyrefly: ignore [missing-import]
@@ -726,7 +803,7 @@ def scan_facebook_channel(
                         if vid not in seen_ids:
                             seen_ids.add(vid)
                             collected_vids.append(vid)
-                            if len(collected_vids) >= max_videos:
+                            if max_videos > 0 and len(collected_vids) >= max_videos:
                                 break
         except Exception:
             pass
@@ -740,7 +817,8 @@ def scan_facebook_channel(
 
     # Xây dựng danh sách kết quả với thông tin chi tiết
     all_videos: List[dict] = []
-    for idx, vid in enumerate(collected_vids[:max_videos]):
+    selected_vids = collected_vids if max_videos <= 0 else collected_vids[:max_videos]
+    for idx, vid in enumerate(selected_vids):
         vurl = f"https://www.facebook.com/watch/?v={vid}"
         meta = video_records.get(vid, {})
 
@@ -771,7 +849,7 @@ def scan_facebook_channel(
             "like_count": likes_raw,
         }
         all_videos.append(entry)
-        _log(f"✔ [Facebook] Video ({len(all_videos)}/{min(len(collected_vids), max_videos)}): {title[:35]}")
+        _log(f"✔ [Facebook] Video ({len(all_videos)}/{len(selected_vids)}): {title[:35]}")
 
     _log(f"✅ [Facebook] Quét hoàn tất! Tìm thấy {len(all_videos)} video.")
     return all_videos

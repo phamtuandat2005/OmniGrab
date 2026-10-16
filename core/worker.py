@@ -765,13 +765,14 @@ class ScanChannelWorker(QThread):
 
         # ── 3. Quét thông thường bằng yt-dlp (YouTube, TikTok...) ──
         # Tìm ffmpeg
-        app_dir = get_base_path()
         ffmpeg_dir = ""
-        for search_dir in [app_dir, os.path.dirname(app_dir)]:
-            if os.path.isfile(os.path.join(search_dir, "ffmpeg.exe")) or \
-               os.path.isfile(os.path.join(search_dir, "ffmpeg")):
-                ffmpeg_dir = search_dir
-                break
+        try:
+            from core.security import setup_ffmpeg_environment
+            ff_bin, _ = setup_ffmpeg_environment()
+            if ff_bin and os.path.isfile(ff_bin):
+                ffmpeg_dir = os.path.dirname(ff_bin)
+        except Exception:
+            pass
         if not ffmpeg_dir:
             found = shutil.which("ffmpeg")
             if found:

@@ -41,40 +41,16 @@ class DownloadConfig:
 
 def _detect_ffmpeg() -> str:
     """
-    Tự động phát hiện đường dẫn ffmpeg.
-
-    Tìm kiếm theo thứ tự:
-    1. Thư mục ứng dụng hiện tại và thư mục gốc dự án.
-    2. Các thư mục tools hoặc bin đi kèm.
-    3. imageio_ffmpeg (nếu có trong môi trường python).
-    4. Biến môi trường PATH.
-
-    Returns:
-        Đường dẫn thư mục chứa ffmpeg, hoặc chuỗi rỗng nếu không tìm thấy.
+    Tự động phát hiện đường dẫn thư mục chứa ffmpeg.
+    Ưu tiên file đi kèm ứng dụng (kể cả khi đóng gói PyInstaller / Nuitka) hoặc PATH.
     """
-    from core.security import get_base_path
-
-    app_dir = get_base_path()
-    parent_dir = os.path.dirname(app_dir)
-    module_dir = os.path.dirname(os.path.abspath(__file__))
-    proj_dir = os.path.dirname(module_dir)
-
-    search_dirs = [
-        app_dir,
-        parent_dir,
-        proj_dir,
-        os.path.join(proj_dir, "tools", "ffmpeg", "bin"),
-        os.path.join(proj_dir, "tools", "ffmpeg"),
-        os.path.join(proj_dir, "tools"),
-        os.path.join(app_dir, "tools", "ffmpeg", "bin"),
-    ]
-
-    for search_dir in search_dirs:
-        if os.path.isdir(search_dir):
-            ffmpeg_exe = os.path.join(search_dir, "ffmpeg.exe")
-            ffmpeg_bin = os.path.join(search_dir, "ffmpeg")
-            if os.path.isfile(ffmpeg_exe) or os.path.isfile(ffmpeg_bin):
-                return search_dir
+    try:
+        from core.security import setup_ffmpeg_environment
+        ff, _ = setup_ffmpeg_environment()
+        if ff and os.path.isfile(ff):
+            return os.path.dirname(ff)
+    except Exception:
+        pass
 
     # Kiểm tra trong imageio_ffmpeg nếu được cài đặt
     try:

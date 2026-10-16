@@ -9,6 +9,17 @@ from __future__ import annotations
 import os
 import sys
 
+# Dung Chromium di kem ban phat hanh, khong phu thuoc Chrome/Edge tren may khach.
+if sys.platform == "win32" and getattr(sys, "frozen", False):
+    _runtime_base = getattr(sys, "_MEIPASS", None)
+    if not _runtime_base:
+        _runtime_base = os.environ.get(
+            "NUITKA_ONEFILE_DIRECTORY", os.path.dirname(sys.executable)
+        )
+    _bundled_browsers = os.path.join(_runtime_base, "playwright-browsers")
+    if os.path.isdir(_bundled_browsers):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _bundled_browsers
+
 if sys.platform == "win32":
     try:
         import ctypes
@@ -58,7 +69,10 @@ from PyQt6.QtGui import QFont, QIcon
 from ui.main_window import MainWindow
 from ui.styles import get_app_stylesheet
 
-from core.security import run_security_checks, get_resource_path
+from core.security import run_security_checks, get_resource_path, setup_ffmpeg_environment
+
+# Tự động nạp ffmpeg và ffprobe vào PATH hệ thống ngay khi khởi chạy
+setup_ffmpeg_environment()
 
 
 def _ensure_windows_shortcut(ico_path: str) -> None:

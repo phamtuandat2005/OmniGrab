@@ -5,7 +5,7 @@ Giao diện hiện đại chuẩn VS Code với Menu Bar, QStackedWidget & Dubbi
 Layout:
   Cột trái  : QStackedWidget (Trang 0: Dán link | Trang 1: Quét kênh)
   Cột phải  : Tiến trình + Realtime Log
-  Bottom     : QStatusBar với tóm tắt + nút BẮT ĐẦU TẢI
+  Bottom    : QStatusBar với tóm tắt + nút BẮT ĐẦU TẢI
 
 Ngôn ngữ giao diện: 100% Tiếng Việt.
 """
@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMenu,
     QMenuBar,
@@ -67,6 +68,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -999,11 +1001,13 @@ class MainWindow(QMainWindow):
 
         act_tiktok_settings = QAction("Cài đặt Tự động Đăng TikTok...", self)
         act_tiktok_settings.triggered.connect(self._on_open_tiktok_dialog)
-        menu_tools.addAction(act_tiktok_settings)
 
         act_youtube_settings = QAction("Cài đặt Tự động Đăng & Hẹn giờ YouTube...", self)
         act_youtube_settings.triggered.connect(self._on_open_youtube_dialog)
-        menu_tools.addAction(act_youtube_settings)
+
+        menu_upload_settings = menu_tools.addMenu("Cài đặt đăng video")
+        menu_upload_settings.addAction(act_tiktok_settings)
+        menu_upload_settings.addAction(act_youtube_settings)
 
         act_dub_file = QAction("Lồng tiếng file MP4 có sẵn trên máy...", self)
         act_dub_file.triggered.connect(self._on_dub_manual)
@@ -2128,42 +2132,219 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════
 
     def _on_about(self) -> None:
-        QMessageBox.information(
-            self, "Thông tin phần mềm",
-            "OmniGrab Pro v4.0\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Tải video hàng loạt từ TikTok, Douyin,\n"
-            "Facebook, YouTube — không watermark.\n\n"
-            "Tính năng mới v4.0:\n"
-            "  • Lồng tiếng AI Tiếng Việt (Edge-TTS)\n"
-            "  • Quét kênh + Bộ lọc Viral\n"
-            "  • Xuất CSV danh sách video\n\n"
-            "Bản quyền Creator Việt Nam 2024\n"
-            "Động cơ: yt-dlp · FFmpeg · faster-whisper",
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Thông tin OmniGrab")
+        dlg.setWindowIcon(self.windowIcon())
+        dlg.setFixedSize(520, 390)
+        dlg.setStyleSheet("""
+            QDialog { background: #0b0e14; color: #e2e8f0; }
+            QLabel { color: #cbd5e1; }
+            QLabel#appName { color: #f8fafc; font-size: 23px; font-weight: 700; }
+            QLabel#versionBadge { color: #94a3b8; font-size: 12px; }
+            QLabel#sectionTitle { color: #f8fafc; font-size: 14px; font-weight: 700; }
+            QLabel#featureTitle { color: #e2e8f0; font-size: 12px; font-weight: 700; }
+            QLabel#muted { color: #94a3b8; font-size: 11px; }
+            QPushButton {
+                background: #1e293b; color: #e2e8f0;
+                border: 1px solid #334155; border-radius: 7px;
+                padding: 7px 18px; min-width: 62px;
+            }
+            QPushButton:hover { background: #334155; }
+        """)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(22, 18, 22, 16)
+        root.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setSpacing(14)
+        icon_label = QLabel()
+        app_icon = self.windowIcon()
+        if not app_icon.isNull():
+            icon_label.setPixmap(app_icon.pixmap(52, 52))
+        else:
+            icon_label.setText("▶")
+            icon_label.setStyleSheet("font-size: 30px; color: #22d3ee;")
+        header.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignTop)
+
+        title_stack = QVBoxLayout()
+        title_row = QHBoxLayout()
+        name = QLabel("OmniGrab Pro")
+        name.setObjectName("appName")
+        version = QLabel("v4.0.0")
+        version.setObjectName("versionBadge")
+        title_row.addWidget(name)
+        title_row.addWidget(version, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        title_stack.addLayout(title_row)
+
+        summary = QLabel(
+            "Công cụ desktop hỗ trợ tải video, quét danh sách kênh "
+            "và xử lý phụ đề, lồng tiếng."
         )
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        title_stack.addWidget(summary)
+        header.addLayout(title_stack, 1)
+        root.addLayout(header)
+
+        platforms = QLabel("TikTok   ·   Douyin   ·   Facebook   ·   YouTube")
+        platforms.setStyleSheet(
+            "color: #7dd3fc; font-size: 11px; font-weight: 600; padding-left: 2px;"
+        )
+        root.addWidget(platforms)
+
+        section = QLabel("TÍNH NĂNG CHÍNH")
+        section.setObjectName("sectionTitle")
+        root.addWidget(section)
+
+        features = QGridLayout()
+        features.setHorizontalSpacing(26)
+        features.setVerticalSpacing(12)
+        feature_items = (
+            ("Tải video", "Tải nhiều liên kết và theo dõi tiến trình."),
+            ("Quét kênh", "Lọc danh sách theo dữ liệu video khả dụng."),
+            ("Studio lồng tiếng", "Nhận dạng, dịch và xuất phụ đề hoặc video."),
+            ("Xuất danh sách", "Lưu kết quả quét thành tệp CSV."),
+        )
+        for index, (feature_title, description) in enumerate(feature_items):
+            item = QVBoxLayout()
+            item.setSpacing(3)
+            heading = QLabel(feature_title)
+            heading.setObjectName("featureTitle")
+            detail = QLabel(description)
+            detail.setWordWrap(True)
+            detail.setStyleSheet("color: #94a3b8; font-size: 11px;")
+            item.addWidget(heading)
+            item.addWidget(detail)
+            features.addLayout(item, index // 2, index % 2)
+        root.addLayout(features)
+
+        tech_label = QLabel("CÔNG NGHỆ")
+        tech_label.setObjectName("sectionTitle")
+        root.addWidget(tech_label)
+        tech = QLabel("PyQt6  ·  yt-dlp  ·  FFmpeg  ·  faster-whisper  ·  Edge-TTS")
+        tech.setWordWrap(True)
+        tech.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        root.addWidget(tech)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        close_button = QPushButton("Đóng")
+        close_button.clicked.connect(dlg.accept)
+        footer.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+        root.addLayout(footer)
+        dlg.exec()
 
     def _on_guide(self) -> None:
-        QMessageBox.information(
-            self, "Hướng dẫn sử dụng",
-            "HƯỚNG DẪN NHANH OMNIGRAB v4.0\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "① Chọn thư mục lưu qua menu Tệp → Thư mục lưu video.\n\n"
-            "② TẢI THEO LINK:\n"
-            "   • Dán link TikTok / Douyin / Facebook / YouTube vào ô nhập.\n"
-            "   • Nhấn BẮT ĐẦU TẢI.\n\n"
-            "③ QUÉT KÊNH:\n"
-            "   • Vào Chế độ tải → Quét Kênh (Ctrl+2).\n"
-            "   • Dán URL trang cá nhân / fanpage.\n"
-            "   • Đặt bộ lọc Viral nếu muốn.\n"
-            "   • Nhấn Quét kênh → tích chọn video → BẮT ĐẦU TẢI.\n\n"
-            "④ COOKIE FACEBOOK / DOUYIN:\n"
-            "   • Xuất cookie qua Extension 'Get cookies.txt LOCALLY'.\n"
-            "   • Vào menu Tệp → Nạp file Cookie để nạp vào phần mềm.\n\n"
-            "⑤ LỒNG TIẾNG AI:\n"
-            "   • Vào Công cụ → Cài đặt Lồng tiếng AI (Ctrl+L).\n"
-            "   • Cài đặt xong, bật 'Tự động lồng tiếng' → video tải xong\n"
-            "     sẽ được lồng tiếng Tiếng Việt tự động."
-        )
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Trung tâm trợ giúp OmniGrab")
+        dlg.resize(860, 620)
+        dlg.setMinimumSize(700, 500)
+        dlg.setStyleSheet("""
+            QDialog { background: #0b0e14; }
+            QListWidget { background: #0f1724; border: 1px solid #1e293b; border-radius: 10px; padding: 6px; outline: 0; }
+            QListWidget::item { color: #cbd5e1; padding: 12px 10px; border-radius: 7px; }
+            QListWidget::item:selected { background: #172554; color: #bfdbfe; }
+            QListWidget::item:hover:!selected { background: #172033; }
+            QTextBrowser { background: #0f1724; border: 1px solid #1e293b; border-radius: 10px; padding: 18px; color: #e2e8f0; }
+            QPushButton { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 7px; padding: 8px 22px; }
+            QPushButton:hover { background: #334155; }
+        """)
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(8)
+
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        nav = QListWidget(dlg)
+        nav.setFixedWidth(190)
+        pages = QTextBrowser(dlg)
+        pages.setOpenExternalLinks(True)
+        pages.setMinimumWidth(430)
+        body.addWidget(nav)
+        body.addWidget(pages, 1)
+        root.addLayout(body, 1)
+
+        sections = [
+            ("Bắt đầu", "#06b6d4", """
+                <p class='lead'>Bắt đầu nhanh</p><p>Chọn nơi lưu, nhập liên kết và theo dõi tiến trình ngay trong cửa sổ chính.</p>
+                <div class='card'><b>1. Chọn thư mục</b><br>Mở <b>Tệp → Thư mục lưu video</b> và chọn ổ đĩa còn dung lượng.</div>
+                <div class='card'><b>2. Chọn cách làm việc</b><br>Dán link video trên trang Tải theo link, hoặc mở <b>Chế độ tải → Quét Kênh</b> bằng <kbd>Ctrl+2</kbd>.</div>
+                <div class='card'><b>3. Theo dõi và kiểm tra</b><br>Đợi ứng dụng báo hoàn tất, sau đó mở thư mục lưu để xem file. Không mở file khi tiến trình vẫn đang ghi.</div>
+                <div class='note blue'><b>Mẹo:</b> Khi gặp lỗi lần đầu, thử một video/link đơn lẻ để dễ xác định vấn đề.</div>
+            """),
+            ("Tải video", "#3b82f6", """
+                <p class='lead'>Tải theo liên kết</p><ol><li>Dán URL video đầy đủ vào ô nhập.</li><li>Có thể dán nhiều link, mỗi link một dòng; kiểm tra số link được nhận diện.</li><li>Chọn thư mục lưu rồi nhấn <b>BẮT ĐẦU TẢI</b>.</li></ol>
+                <h3>Nếu link không hợp lệ</h3><ul><li>Mở video trong trình duyệt và sao chép URL trên thanh địa chỉ.</li><li>Không dùng link trang tìm kiếm, trang chủ hoặc link đã bị cắt.</li><li>Với link chia sẻ trong ứng dụng chat, mở link trong trình duyệt trước rồi sao chép địa chỉ sau khi chuyển hướng.</li></ul>
+                <h3>Nếu tải đứng hoặc thất bại</h3><ol><li>Mở cùng video trong trình duyệt để kiểm tra Internet và quyền xem.</li><li>Thử một link riêng lẻ; nếu chạy nhiều link, giảm số luồng trong <b>Công cụ → Cài đặt số luồng tải đồng thời</b>.</li><li>Kiểm tra ổ đĩa còn chỗ trống. Dừng tác vụ, chờ dừng hẳn rồi mới thử lại.</li></ol>
+                <div class='note amber'>Video riêng tư, bị xóa, giới hạn tuổi/khu vực hoặc yêu cầu đăng nhập có thể không tải được nếu tài khoản không có quyền xem.</div>
+            """),
+            ("Quét kênh", "#22c55e", """
+                <p class='lead'>Quét, lọc và chọn video</p><ol><li>Mở <b>Quét Kênh</b> bằng <kbd>Ctrl+2</kbd>.</li><li>Dán URL hồ sơ, fanpage, kênh hoặc playlist phù hợp.</li><li>Chọn số lượng hoặc <b>All</b>, sau đó nhấn <b>Quét kênh</b>.</li><li>Chờ hoàn tất, tích video cần tải và nhấn <b>BẮT ĐẦU TẢI</b>.</li></ol>
+                <h3>Kết quả ít hoặc danh sách trống</h3><ul><li>Tạm đặt lượt xem/lượt thích thành <b>Không lọc</b> và thời lượng/ngày đăng thành <b>Tất cả</b>; các bộ lọc kết hợp với nhau.</li><li>Thử URL tab Video/Reels chính thức thay URL trang chủ.</li><li>Mở URL trong trình duyệt để xác nhận trang công khai và tài khoản xem được.</li><li>Nạp cookie mới của đúng nền tảng nếu trang yêu cầu đăng nhập.</li></ul>
+                <div class='note amber'><b>Về All:</b> All yêu cầu lấy toàn bộ mục scraper nhận được. Một số nền tảng chỉ gửi một phần danh sách, yêu cầu cuộn trang hoặc giới hạn truy cập; OmniGrab không thể lấy mục mà nền tảng không trả về.</div>
+                <h3>Thiếu lượt thích, lượt xem, ngày hoặc thời lượng</h3><p>Nền tảng có thể ẩn metadata trong danh sách. Video vẫn có thể tải được; thử mở video trực tiếp để kiểm tra.</p>
+            """),
+            ("Cookie và 403", "#f59e0b", """
+                <p class='lead'>Đăng nhập, cookie và lỗi 403</p><p>Cookie là phiên đăng nhập của bạn. Chỉ xuất và dùng cookie trên thiết bị tin cậy.</p>
+                <ol><li>Đăng nhập đúng tài khoản trong trình duyệt và mở website cần dùng.</li><li>Nếu website yêu cầu CAPTCHA/xác minh, hoàn tất bằng trình duyệt.</li><li>Dùng extension xuất cookie dạng Netscape <code>.txt</code> khi đang ở đúng domain.</li><li>Trong OmniGrab chọn <b>Tệp → Nạp file Cookie</b>, sau đó thử một video.</li></ol>
+                <div class='card'><b>Chọn đúng cookie</b><br>TikTok và Douyin là hai phiên riêng. Cookie tải video cũng không thay cookie upload.</div>
+                <p>Nếu vẫn báo 403/login, đăng nhập lại, xuất cookie mới và thử sau vài phút. Cookie có thể hết hạn hoặc bị thu hồi.</p>
+                <div class='note red'><b>Bảo vệ tài khoản:</b> Không gửi cookie, mật khẩu, token hay ảnh chụp có chứa những dữ liệu này. Nếu nghi cookie bị lộ, thu hồi phiên đăng nhập từ cài đặt tài khoản.</div>
+            """),
+            ("File tải về", "#a855f7", """
+                <p class='lead'>Video tải xong nhưng không mở được</p><ol><li>Đợi ứng dụng báo hoàn tất hoàn toàn.</li><li>Kiểm tra kích thước file trong thư mục lưu. File 0 KB hoặc nhỏ bất thường thường là tải chưa xong.</li><li>Kiểm tra dung lượng ổ đĩa, xóa file tải lỗi và tải lại khi mạng ổn định.</li><li>Thử phát bằng VLC hoặc trình phát khác để loại trừ vấn đề codec.</li></ol>
+                <h3>Video có hình nhưng thiếu tiếng</h3><p>Tải lại video. Một số nguồn gửi hình và tiếng ở hai luồng riêng; ứng dụng cần FFmpeg để ghép chúng.</p>
+                <h3>Không tìm thấy FFmpeg</h3><p>Khởi động lại OmniGrab. Nếu thông báo vẫn còn, kiểm tra <code>ffmpeg.exe</code> trong thư mục cài đặt hoặc cài lại ứng dụng từ bộ cài đáng tin cậy.</p>
+            """),
+            ("Lồng tiếng AI", "#ec4899", """
+                <p class='lead'>Phụ đề, dịch và lồng tiếng</p><ol><li>Mở video trong Studio và chọn đúng ngôn ngữ lời thoại gốc tại <b>Công cụ → Cài đặt Lồng tiếng AI</b>.</li><li>Bóc tách kịch bản, rà lại câu nhận dạng, bản dịch và mốc thời gian.</li><li>Xuất SRT để kiểm tra trước, hoặc xuất video lồng tiếng khi nội dung đã ổn.</li></ol>
+                <div class='card'><b>Các dịch vụ cần kết nối</b><br>Bản cài đặt có sẵn mô hình Whisper base; nếu chọn mô hình khác, ứng dụng sẽ tải mô hình đó lần đầu. gTTS cần Internet. Gemini cần API key hợp lệ và còn hạn mức nếu bạn chọn dùng Gemini.</div>
+                <h3>Whisper nhận sai hoặc không nghe thấy lời thoại</h3><p>Kiểm tra video có tiếng rõ, chọn đúng ngôn ngữ nguồn và rà lại kịch bản. Nhạc lớn, tiếng ồn hoặc nhiều người nói chồng nhau làm giảm độ chính xác.</p>
+                <h3>Dịch/TTS không hoạt động</h3><p>Kiểm tra Internet; kiểm tra API key/quota Gemini nếu đang dùng. Thử lại sau vài phút hoặc thử video ngắn hơn.</p>
+                <div class='note red'><b>“File âm thanh tiếng Việt bị rỗng”:</b> Các câu giọng đọc chưa ghép thành track hoàn chỉnh. Xem dòng <b>[AUDIO MIX]</b> ngay trước lỗi. Nếu ứng dụng báo giữ thư mục tạm, giữ nguyên thư mục đó và gửi đường dẫn cùng thông báo lỗi cho hỗ trợ; không gửi cookie/API key.</div>
+            """),
+            ("Đăng video", "#ef4444", """
+                <p class='lead'>Đăng video lên TikTok hoặc YouTube</p><ol><li>Đăng nhập đúng tài khoản/kênh đích trong trình duyệt.</li><li>Nạp cookie upload riêng của nền tảng cần đăng.</li><li>Kiểm tra file, quyền riêng tư, tiêu đề, mô tả và lịch đăng.</li><li>Thử một video trước khi chạy nhiều video.</li></ol>
+                <div class='note amber'>Nếu tiến trình dừng hoặc không rõ đã đăng chưa, vào trang kênh kiểm tra trước khi chạy lại để tránh đăng trùng. Nếu trình duyệt yêu cầu xác minh, hoàn tất trên trang rồi thử lại.</div>
+            """),
+            ("Nhờ hỗ trợ", "#06b6d4", """
+                <p class='lead'>Chuẩn bị thông tin khi cần hỗ trợ</p><p>Để người hỗ trợ tìm đúng nguyên nhân, hãy gửi:</p><ul><li>Nền tảng và tính năng đang dùng.</li><li>Bước vừa thực hiện và thời điểm lỗi xảy ra.</li><li>Toàn bộ dòng lỗi liên quan trong nhật ký, đặc biệt các dòng ngay trước lỗi cuối.</li><li>URL công khai nếu bạn có quyền chia sẻ và đã bỏ thông tin riêng tư.</li><li>Các bước bạn đã thử và kết quả.</li></ul>
+                <div class='note red'><b>Không gửi:</b> mật khẩu, cookie, token, Gemini API key hoặc ảnh màn hình có chứa các thông tin đó.</div>
+            """),
+        ]
+
+        page_template = """<!doctype html><html><head><meta charset='utf-8'><style>
+            body { font-family: 'Segoe UI', Arial, sans-serif; color: #cbd5e1; font-size: 14px; line-height: 1.65; }
+            h1 { color: #f8fafc; font-size: 24px; margin: 0 0 8px; }
+            h3 { color: #e2e8f0; font-size: 15px; margin: 22px 0 6px; }
+            p { margin: 7px 0 12px; } .lead { color: ACCENT; font-size: 17px; font-weight: 700; margin-top: 0; }
+            ol, ul { padding-left: 22px; } li { margin: 5px 0; }
+            .card { background: #111827; border: 1px solid #263449; border-left: 3px solid ACCENT; border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+            .note { border-radius: 8px; padding: 11px 14px; margin: 14px 0; background: #111827; }
+            .blue { border: 1px solid #1d4ed8; } .amber { border: 1px solid #a16207; } .red { border: 1px solid #991b1b; }
+            code, kbd { color: #bfdbfe; background: #172033; padding: 2px 5px; border-radius: 4px; }
+        </style></head><body><h1>TITLE</h1>BODY</body></html>"""
+        html_pages = []
+        for title, accent, content in sections:
+            nav.addItem(title)
+            html_pages.append(page_template.replace("TITLE", title).replace("ACCENT", accent).replace("BODY", content))
+
+        def show_section(index: int) -> None:
+            if 0 <= index < len(html_pages):
+                pages.setHtml(html_pages[index])
+
+        nav.currentRowChanged.connect(show_section)
+        nav.setCurrentRow(0)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        close_button = QPushButton("Đóng", dlg)
+        close_button.clicked.connect(dlg.accept)
+        footer.addWidget(close_button)
+        root.addLayout(footer)
+        dlg.exec()
 
     # ══════════════════════════════════════════════════════════════════
     # XỬ LÝ SỰ KIỆN — TRANG 0 (Link)

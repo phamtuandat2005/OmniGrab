@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import uuid
@@ -54,30 +55,107 @@ class LicenseManager:
 
     def get_machine_id(self) -> str:
         """
-        Sinh ma dinh danh phan cung duy nhat cho may tinh.
-        Dinh dang: OG-XXXX-XXXX-XXXX (12 ky tu hex in hoa).
+        Tra ve ma may da luu de khong doi sau khi Windows cap nhat.
+
+        Neu day la lan chay dau cua phien ban co luu ma, uu tien khoi phuc
+        MID tu license cu da ky so; neu khong co thi tao MID theo cach cu,
+        luu lai va tai su dung cho cac lan sau.
         """
-        raw = self._read_hardware_uuid()
-        digest = hashlib.sha256(raw.encode()).hexdigest().upper()
-        part = digest[:12]
-        return f"OG-{part[0:4]}-{part[4:8]}-{part[8:12]}"
+        cached = getattr(self, "_machine_id_cache", None)
+        if cached:
+            return cached
+
+        for path in self._machine_id_storage_paths():
+            try:
+                machine_id = path.read_text(encoding="ascii").strip().upper()
+            except (OSError, UnicodeError):
+                continue
+            if self._is_valid_machine_id(machine_id):
+                self._machine_id_cache = machine_id
+                # Replicate a per-user copy into the machine-wide location
+                # when possible, so other Windows accounts get the same ID.
+                self._save_machine_id(machine_id)
+                return machine_id
+
+        machine_id = self._get_machine_id_from_saved_license()
+        if not machine_id:
+            raw = self._read_hardware_uuid()
+            digest = hashlib.sha256(raw.encode()).hexdigest().upper()
+            part = digest[:12]
+            machine_id = f"OG-{part[0:4]}-{part[4:8]}-{part[8:12]}"
+
+        self._machine_id_cache = machine_id
+        self._save_machine_id(machine_id)
+        return machine_id
+
+    @staticmethod
+    def _is_valid_machine_id(machine_id: str) -> bool:
+        return re.fullmatch(r"OG-[0-9A-F]{4}(?:-[0-9A-F]{4}){2}", machine_id) is not None
+
+    @staticmethod
+    def _machine_id_storage_paths() -> list[Path]:
+        """Machine-wide path first, then a writable per-user fallback."""
+        paths: list[Path] = []
+        program_data = os.environ.get("PROGRAMDATA")
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if program_data:
+            paths.append(Path(program_data) / "OmniGrab" / "machine_id.dat")
+        if local_app_data:
+            paths.append(Path(local_app_data) / "OmniGrab" / "machine_id.dat")
+        paths.append(Path.home() / ".omnigrab_machine_id")
+        return paths
+
+    @classmethod
+    def _save_machine_id(cls, machine_id: str) -> None:
+        """Persist the same ID wherever this account has write access."""
+        for path in cls._machine_id_storage_paths():
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(machine_id + "\n", encoding="ascii")
+            except OSError:
+                continue
+
+    def _get_machine_id_from_saved_license(self) -> str:
+        """Migrate the MID from a previously issued, cryptographically valid key."""
+        try:
+            key_input = _LICENSE_FILE.read_text(encoding="utf-8").strip()
+            raw = base64.b64decode(key_input, validate=True)
+            bundle = json.loads(raw.decode("utf-8"))
+            payload, payload_bytes, signature = self._unpack_bundle(bundle)
+            self._load_public_key().verify(
+                signature,
+                payload_bytes,
+                padding.PKCS1v15(),
+                hashes.SHA256(),
+            )
+            machine_id = str(payload.get("mid", "")).strip().upper()
+            return machine_id if self._is_valid_machine_id(machine_id) else ""
+        except Exception:
+            return ""
 
     def _read_hardware_uuid(self) -> str:
         """Doc UUID phan cung tu he thong."""
         system = platform.system()
 
         if system == "Windows":
-            try:
-                result = subprocess.run(
-                    ["wmic", "csproduct", "get", "uuid"],
-                    capture_output=True, text=True, timeout=5
-                )
-                lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
-                if len(lines) >= 2 and lines[1] not in ("", "UUID", "N/A",
-                        "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"):
-                    return lines[1]
-            except Exception:
-                pass
+            commands = (
+                ["wmic", "csproduct", "get", "uuid"],
+                [
+                    "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    "(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID",
+                ],
+            )
+            for command in commands:
+                try:
+                    result = subprocess.run(
+                        command, capture_output=True, text=True, timeout=8
+                    )
+                    for line in result.stdout.splitlines():
+                        value = line.strip()
+                        if self._is_valid_hardware_uuid(value):
+                            return value
+                except Exception:
+                    continue
 
         elif system == "Linux":
             for path in ["/sys/class/dmi/id/product_uuid", "/etc/machine-id"]:
@@ -103,6 +181,18 @@ class LicenseManager:
                 pass
 
         return str(uuid.getnode())
+
+    @staticmethod
+    def _is_valid_hardware_uuid(value: str) -> bool:
+        normalized = value.strip().upper()
+        return (
+            bool(normalized)
+            and normalized not in {"UUID", "N/A", "NONE", "UNKNOWN"}
+            and normalized not in {
+                "00000000-0000-0000-0000-000000000000",
+                "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+            }
+        )
 
     # ------------------------------------------------------------------
     # 2. KHOA CONG KHAI RSA

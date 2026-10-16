@@ -84,11 +84,11 @@ Studio được truy cập từ menu **Chế độ tải → 3. Studio Lồng ti
 ## Yêu cầu
 
 - Windows 10/11 là môi trường được ưu tiên trong các script build và installer hiện có. Source có thể chạy trên hệ điều hành khác nếu toàn bộ phụ thuộc tương thích; `build.sh` hiện cung cấp cấu hình build đơn giản hơn bản Windows và chưa gom đầy đủ mọi tài nguyên/thư viện.
-- Python 3.10 trở lên được README/repository hướng tới. Khả năng cài các wheel PyTorch/ctranslate2/AV phụ thuộc phiên bản Python, hệ điều hành và kiến trúc; nếu pip không tìm được wheel phù hợp, thử Python 3.11 hoặc 3.12 trong môi trường mới.
-- FFmpeg cần cho ghép audio/video, MP3, trích âm thanh và một số thao tác chuyển mã. OmniGrab dò binary cạnh project/app, một số thư mục tools và PATH tùy luồng. Repo hiện có `ffmpeg.exe`; không thấy `ffprobe.exe` ở thư mục gốc trong mọi checkout. Có thể cài cả hai và đưa vào PATH hoặc đặt cạnh ứng dụng.
+- Khi chạy từ mã nguồn, cần Python 3.10 trở lên và các thư viện trong `requirements.txt`. Khả năng cài các wheel PyTorch/ctranslate2/AV phụ thuộc phiên bản Python, hệ điều hành và kiến trúc; nếu pip không tìm được wheel phù hợp, thử Python 3.11 hoặc 3.12 trong môi trường mới. Người dùng cài bản Windows không cần cài Python.
+- Bản cài Windows x64 đóng gói sẵn FFmpeg, FFprobe, Chromium của Playwright, thư viện Python và mô hình Whisper `base`; người dùng không phải cài thêm các thành phần này hay cài Chrome/Edge để dùng chức năng đăng video.
 - Kết nối Internet cần cho tải video, một số bước quét, Gemini/Google Translate và gTTS.
-- Playwright cần browser phù hợp để upload; phiên bản browser/runtime cài được ảnh hưởng đến thao tác đăng.
-- Whisper có thể tải model lần đầu và tiêu tốn tài nguyên đáng kể. Model `base` là thiết lập mặc định, có thể đổi trong cài đặt lồng tiếng.
+- Mô hình Whisper `tiny` và `medium` không nằm trong bản cài để tránh làm bộ cài phình thêm đáng kể; nếu chọn một trong các model này, ứng dụng sẽ tải model đó lần đầu.
+- Nhập cookie của chính tài khoản trước khi tải nội dung cần đăng nhập. Gemini vẫn cần API key nếu chọn Gemini; thông tin cá nhân như cookie/API key không được đóng gói sẵn.
 
 ## Cài đặt và chạy từ source
 
@@ -186,19 +186,19 @@ Cookie là thông tin xác thực tương đương một phiên đăng nhập. C
 3. Nạp file phù hợp bằng mục tương ứng trong menu **Tệp**.
 4. Không commit cookie, token, Gemini API key hoặc hồ sơ Playwright vào Git; không gửi chúng trong screenshot/log. Nếu lộ, thu hồi phiên/key ngay.
 
-Ứng dụng lưu cài đặt người dùng trong `~/.omnigrab_settings.json` và cũng đồng bộ một số thiết lập qua `QSettings`. License và lượt dùng thử được lưu riêng trong `~/.omnigrab_license.dat` và `~/.omnigrab_trial.dat`. Các file chứa key/cookie do người dùng chọn có thể nằm ở đường dẫn bất kỳ. Hồ sơ trình duyệt YouTube có thể lưu phiên đăng nhập trong `profiles/` cạnh ứng dụng. Bảo vệ các dữ liệu này như dữ liệu nhạy cảm.
+Ứng dụng lưu cài đặt người dùng trong `~/.omnigrab_settings.json` và cũng đồng bộ một số thiết lập qua `QSettings`. License và lượt dùng thử được lưu riêng trong `~/.omnigrab_license.dat` và `~/.omnigrab_trial.dat`. Machine ID được lưu bền trong `%ProgramData%/OmniGrab/machine_id.dat` (hoặc thư mục người dùng nếu không ghi được), giúp mã không đổi sau khi cập nhật Windows hay cập nhật ứng dụng. Nếu có license cũ hợp lệ, ứng dụng giữ lại MID trong license khi khởi tạo dữ liệu lưu mới. Cài lại Windows hoặc xóa dữ liệu ứng dụng có thể xóa bản lưu này; hãy sao lưu mã và license trước khi cài mới hệ điều hành. Các file chứa key/cookie do người dùng chọn có thể nằm ở đường dẫn bất kỳ. Hồ sơ trình duyệt YouTube có thể lưu phiên đăng nhập trong `profiles/` cạnh ứng dụng. Bảo vệ các dữ liệu này như dữ liệu nhạy cảm.
 
 ## Đóng gói
 
 ### Windows
 
-`build.bat` mặc định cài dependencies vào `venv` rồi hiển thị menu:
+`build.bat` cài dependencies vào môi trường `venv`, tải Chromium và Whisper base vào thư mục staging `build_runtime/`, sau đó đóng gói bản Windows x64. Máy build cần Internet, Python tương thích và Inno Setup 6 hoặc 7 để tạo installer.
 
-1. **PyInstaller one-file:** lựa chọn mặc định; kết quả báo trong `dist/OmniGrab.exe`.
-2. **Nuitka one-file:** cần compiler C/C++ phù hợp; script cấu hình thu thập các thư viện và tài nguyên chính.
-3. **PyArmor:** nhánh này có trong menu nhưng cần được xác minh riêng; không xem là build đã hỗ trợ ổn định nếu chưa thử trên môi trường sạch.
+1. Chọn **1** trong menu build, hoặc chạy `build.bat 1`.
+2. PyInstaller tạo thư mục chạy `dist_release/OmniGrab/`, đưa FFmpeg, FFprobe, Chromium và Whisper base vào cùng gói, rồi kiểm tra các thành phần bắt buộc.
+3. Nếu tìm thấy Inno Setup 6/7, script tự tạo file cài đặt `dist_installer/OmniGrab.Setup.4.0.0.exe`. Đây là file gửi cho khách hàng; họ không cần Python, FFmpeg, FFprobe hay trình duyệt cài sẵn.
 
-Có thể truyền `1` hoặc `2` làm lựa chọn cho `build.bat`. Script có thể tải/cài gói build và cần mạng. `ffmpeg.exe`/`ffprobe.exe` được đưa vào build nếu có ở thư mục dự án.
+Đặt cả `ffmpeg.exe` và `ffprobe.exe` ở thư mục gốc dự án, `tools\ffmpeg\bin`, hoặc thêm vào `PATH`. Build dừng nếu không tìm thấy/chạy được một trong hai. Nếu Inno Setup chưa cài trên máy build, thư mục `dist_release/OmniGrab/` vẫn được tạo nhưng installer `.exe` sẽ chưa có; cài Inno Setup 6 rồi chạy lại `build.bat 1`.
 
 ### Linux/macOS
 
@@ -206,7 +206,7 @@ Có thể truyền `1` hoặc `2` làm lựa chọn cho `build.bat`. Script có 
 
 ### Installer Windows
 
-`setup.iss` là script Inno Setup tham chiếu tới `dist\OmniGrab\*`. Nó phù hợp với layout onedir đó; kết quả build one-file `dist\OmniGrab.exe` không khớp trực tiếp nguồn file installer nếu chưa điều chỉnh/copy theo cấu trúc mong đợi.
+`setup.iss` là script Inno Setup chép toàn bộ `dist\OmniGrab\*`, tạo shortcut Start Menu và tùy chọn shortcut Desktop. Bộ cài yêu cầu Windows x64 và quyền cài đặt; Chromium cùng mô hình Whisper base được đưa vào để khách hàng không phải tải/cài riêng các thành phần runtime này.
 
 ## Cấu trúc repository
 
@@ -239,17 +239,81 @@ OmniGrab/
 
 ## Xử lý sự cố
 
-| Triệu chứng | Nguyên nhân thường gặp / hướng xử lý |
-|---|---|
-| Không cài được `faster-whisper`, `ctranslate2` hoặc `av` | Kiểm tra phiên bản/kiến trúc Python và wheel tương thích; thử môi trường sạch với Python 3.11/3.12; xem lỗi pip đầy đủ. |
-| Quét hoặc tải bị lỗi login/403/HTTP | Kiểm tra URL và quyền truy cập; nạp cookie mới của đúng domain/tài khoản; thử lại sau. Nền tảng có thể đã thay API hoặc giới hạn tự động. |
-| Quét không có video hoặc thiếu metadata | Kiểm tra đây có phải URL channel/list hợp lệ không; thử giới hạn nhỏ hơn; metadata có thể bị ẩn/không được scraper trả về. |
-| MP3, merge hoặc dubbing báo lỗi FFmpeg | Kiểm tra `ffmpeg` và `ffprobe` chạy được từ terminal/PATH hoặc đặt cạnh app; mở log để biết binary nào không được tìm thấy. |
-| Video không phát trong Studio | File có thể chưa tải xong hoặc container/codec lỗi. Thử mở bằng player khác và kiểm tra FFmpeg/codec; Studio từ chối file nhỏ hơn 1 KiB hoặc không giải mã được. |
-| Whisper nhận sai hoặc không nhận giọng | Chọn ngôn ngữ nguồn đúng, dùng audio rõ hơn, thử model khác nếu máy đủ tài nguyên; tiếng ồn/nhạc nền làm giảm chất lượng nhận dạng. |
-| Dịch/TTS dừng giữa chừng | Kiểm tra Internet, quota/giới hạn dịch vụ và Gemini key; dịch vụ Google/gTTS là phụ thuộc trực tuyến, không bảo đảm luôn sẵn sàng. |
-| Upload không đăng được | Xác nhận cookie còn hiệu lực và tài khoản đã đăng nhập đúng; thử browser runtime của Playwright; giao diện nền tảng có thể đã thay đổi. Kiểm tra trạng thái kênh trước khi bấm lại để tránh đăng trùng. |
-| Cửa sổ không mở sau thay đổi môi trường | Chạy `python main.py` từ terminal để đọc traceback; xác minh đang dùng interpreter của virtualenv và cài dependencies vào đúng môi trường. |
+Làm lần lượt các bước dưới đây. Sau mỗi bước, thử lại bằng **một video** để biết lỗi đã hết chưa. Các tên menu có thể thay đổi nhẹ theo phiên bản.
+
+### Link không được nhận diện
+
+1. Mở video trên trang của nền tảng và chờ trang tải xong.
+2. Sao chép URL từ thanh địa chỉ trình duyệt. Dùng link video/kênh trực tiếp, không dùng trang tìm kiếm hay link bị cắt.
+3. Dán vào OmniGrab và kiểm tra ứng dụng báo đã nhận diện liên kết.
+4. Nếu link đến từ ứng dụng chat, hãy mở nó trong trình duyệt trước rồi sao chép URL sau khi chuyển hướng.
+
+### Tải bị đứng, chậm hoặc thất bại
+
+1. Mở chính URL đó trong trình duyệt để kiểm tra Internet và quyền xem video.
+2. Thử một URL riêng lẻ. Nếu đang tải nhiều video, giảm số luồng trong **Công cụ → Cài đặt số luồng tải đồng thời**.
+3. Kiểm tra ổ lưu video còn dung lượng; nếu gần đầy, chọn thư mục khác trong **Tệp → Thư mục lưu video**.
+4. Dừng tác vụ, đợi trạng thái dừng hoàn toàn rồi thử lại. Nếu chỉ một link lỗi, nội dung có thể đã bị xóa, đặt riêng tư hoặc bị giới hạn tuổi/khu vực.
+
+### Quét kênh không ra video hoặc thiếu video
+
+1. Dán URL kênh hoặc tab **Video/Reels**. Chọn **All** nếu muốn lấy mọi mục scraper nhận được.
+2. Tạm đặt lượt xem/lượt thích về **Không lọc**, thời lượng/ngày đăng về **Tất cả**. Các bộ lọc được áp dụng đồng thời và có thể loại kết quả.
+3. Mở URL trong trình duyệt. Nếu kênh yêu cầu đăng nhập, nạp cookie mới của đúng nền tảng rồi quét lại.
+4. Với Facebook, một số trang nạp thêm Reels khi cuộn hoặc chỉ cung cấp một phần lịch sử cho scraper; **All** không thể vượt qua giới hạn truy cập/nội dung mà Facebook trả về.
+5. Nếu có video nhưng thiếu lượt thích, lượt xem, ngày đăng hoặc thời lượng, các thông tin đó có thể bị nền tảng ẩn; video vẫn có thể tải được.
+
+### Báo đăng nhập, 403 hoặc yêu cầu xác minh
+
+1. Đăng nhập vào đúng tài khoản trong trình duyệt và hoàn tất CAPTCHA/xác minh nếu trang yêu cầu.
+2. Dùng extension xuất cookie Netscape `.txt` (ví dụ **Get cookies.txt LOCALLY**) khi đang ở đúng trang: `www.tiktok.com`, `www.douyin.com`, `www.facebook.com` hoặc `www.youtube.com`.
+3. Trong OmniGrab chọn **Tệp → Nạp file Cookie**. Cookie TikTok không thay được cookie Douyin; cookie tải video cũng không thay cookie upload.
+4. Nếu vẫn lỗi, đăng nhập lại, xuất cookie mới và nạp lại. Cookie hết hạn hoặc phiên bị thu hồi sẽ cần xuất lại.
+5. Không gửi cookie, mật khẩu, token hoặc ảnh chụp có chứa các thông tin này cho người khác.
+
+### Video tải xong nhưng không mở được hoặc không có tiếng
+
+1. Chờ ứng dụng báo hoàn tất rồi mới mở file. Kiểm tra kích thước trong thư mục lưu; file 0 KB hoặc quá nhỏ thường là chưa tải xong.
+2. Thử phát bằng VLC hoặc một trình phát khác. Nếu không trình phát nào mở được, xóa file lỗi và tải lại khi mạng ổn định.
+3. Nếu hình có nhưng thiếu tiếng, tải lại video. Một số nguồn gửi hình và tiếng riêng, cần FFmpeg để ghép chúng.
+
+### Whisper nhận sai lời thoại hoặc bản dịch chưa đúng
+
+1. Nghe thử âm thanh gốc và chọn đúng ngôn ngữ trong **Công cụ → Cài đặt Lồng tiếng AI**.
+2. Kiểm tra kịch bản và mốc thời gian trong Studio; sửa câu nhận dạng/dịch sai trước khi xuất.
+3. Nhạc lớn, tiếng ồn và nhiều người nói chồng nhau làm giảm độ chính xác. Lần đầu dùng Whisper có thể cần tải mô hình; giữ ứng dụng mở đến khi hoàn tất.
+4. Có thể xuất SRT trước để rà nội dung mà chưa cần tạo giọng đọc.
+
+### Dịch hoặc giọng đọc tiếng Việt không hoạt động
+
+1. Kiểm tra Internet. Dịch vụ gTTS cần mạng; Gemini cần API key hợp lệ và còn hạn mức nếu bạn chọn dùng Gemini.
+2. Nếu kiểm tra giọng đọc hoặc TTS thất bại, chờ vài phút rồi thử một video ngắn. VPN, proxy, tường lửa hoặc giới hạn tạm thời của dịch vụ có thể chặn yêu cầu.
+3. Với video dài có nhiều câu, thử xuất đoạn ngắn hơn để xác định dịch vụ có đang giới hạn số yêu cầu hay không.
+
+### Báo “File âm thanh tiếng Việt bị rỗng” hoặc “Không tạo được track tiếng Việt”
+
+Lỗi này xảy ra khi các câu giọng đọc chưa ghép được thành một track hoàn chỉnh; không nhất thiết video gốc bị hỏng.
+
+1. Đọc các dòng nhật ký **[AUDIO MIX]** ngay trước thông báo lỗi. Chúng cho biết số câu ghép được và lỗi giải mã mẫu nếu có.
+2. Kiểm tra Internet rồi thử lại sau vài phút; mỗi câu thoại cần tạo giọng đọc trực tuyến và video dài có thể có hàng trăm câu.
+3. Nếu ứng dụng báo đã giữ thư mục tạm, đừng xóa thư mục đó trước khi lấy thông tin hỗ trợ. Gửi đường dẫn cùng các dòng **[AUDIO MIX]**, nhưng không gửi cookie hoặc API key.
+4. Nếu lỗi lặp lại, khởi động lại ứng dụng và thử một video ngắn để phân biệt lỗi do mạng/dịch vụ với lỗi của một video cụ thể.
+
+### Lỗi FFmpeg khi ghép tiếng hoặc xuất video
+
+1. Đóng trình phát đang mở file đầu ra và kiểm tra ổ đĩa còn chỗ trống.
+2. Khởi động lại OmniGrab rồi thử video ngắn. Nếu chỉ một video lỗi, nguồn có thể thiếu luồng tiếng hoặc dùng định dạng đặc biệt.
+3. Nếu thông báo nói không tìm thấy FFmpeg, kiểm tra `ffmpeg.exe` trong thư mục ứng dụng; nếu thiếu, cài lại OmniGrab từ bộ cài đáng tin cậy.
+
+### Upload TikTok/YouTube bị dừng hoặc không rõ đã đăng chưa
+
+1. Xác nhận tài khoản/kênh đích trong trình duyệt và nạp cookie upload riêng cho nền tảng đó.
+2. Kiểm tra quyền riêng tư, tiêu đề và lịch đăng; thử một video trước.
+3. Nếu tiến trình dừng, vào trang kênh kiểm tra video đã xuất hiện chưa trước khi chạy lại để tránh đăng trùng.
+
+### Khi cần nhờ hỗ trợ
+
+Ghi lại nền tảng, bước đang thực hiện, URL công khai (nếu có thể chia sẻ), thời điểm xảy ra và toàn bộ thông báo lỗi liên quan trong nhật ký. Cho biết bạn đã thử bước nào. Không gửi mật khẩu, cookie, token hoặc Gemini API key.
 
 ## Kiểm thử
 

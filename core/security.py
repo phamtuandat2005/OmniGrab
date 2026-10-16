@@ -4,8 +4,9 @@ core/security.py - Module bảo vệ mã nguồn và tính toàn vẹn (Anti-Rev
 
 import sys
 import os
+import shutil
 import hashlib
-from typing import Optional
+from typing import Optional, Tuple
 
 def get_base_path() -> str:
     """
@@ -23,6 +24,115 @@ def get_base_path() -> str:
         return os.path.dirname(sys.executable)
     # Chạy từ script Python bình thường
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def get_app_dir() -> str:
+    """
+    Lấy thư mục cài đặt thực tế của ứng dụng (nơi chứa file .exe hoặc thư mục gốc dự án).
+    Khác với get_base_path() (có thể trỏ vào _internal của PyInstaller khi chạy onedir),
+    hàm này luôn đảm bảo trỏ tới thư mục ứng dụng ngoài cùng.
+    """
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def setup_ffmpeg_environment() -> Tuple[str, str]:
+    """
+    Tự động quét và phát hiện ffmpeg.exe & ffprobe.exe trong tất cả các thư mục tiềm năng:
+    1. Thư mục chứa file exe (dist/OmniGrab hoặc Program Files/OmniGrab)
+    2. Thư mục _internal của PyInstaller (sys._MEIPASS hoặc exe/_internal)
+    3. Thư mục gốc dự án khi chạy mã nguồn
+    4. Thư mục tools/ffmpeg/bin, tools/ffmpeg, tools/
+    5. Biến môi trường PATH hiện tại
+    
+    Tự động đưa thư mục chứa binary vào đầu biến PATH để yt-dlp, pydub,
+    faster-whisper, ffmpeg subprocess... luôn chạy được ngay lập tức mà không cần cài thêm gì.
+    
+    Returns:
+        (ffmpeg_path, ffprobe_path)
+    """
+    candidate_dirs: list[str] = []
+
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        if exe_dir and exe_dir not in candidate_dirs:
+            candidate_dirs.append(exe_dir)
+        exe_internal = os.path.join(exe_dir, "_internal")
+        if os.path.isdir(exe_internal) and exe_internal not in candidate_dirs:
+            candidate_dirs.append(exe_internal)
+
+    base_p = get_base_path()
+    if base_p and base_p not in candidate_dirs:
+        candidate_dirs.append(base_p)
+    base_internal = os.path.join(base_p, "_internal")
+    if os.path.isdir(base_internal) and base_internal not in candidate_dirs:
+        candidate_dirs.append(base_internal)
+
+    proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if proj_dir and proj_dir not in candidate_dirs:
+        candidate_dirs.append(proj_dir)
+
+    for sub in [
+        os.path.join(proj_dir, "tools", "ffmpeg", "bin"),
+        os.path.join(proj_dir, "tools", "ffmpeg"),
+        os.path.join(proj_dir, "tools"),
+    ]:
+        if os.path.isdir(sub) and sub not in candidate_dirs:
+            candidate_dirs.append(sub)
+
+    ffmpeg_bin = ""
+    ffprobe_bin = ""
+
+    # Quét tìm ffmpeg
+    for c_dir in candidate_dirs:
+        if not c_dir or not os.path.isdir(c_dir):
+            continue
+        p = os.path.join(c_dir, "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+        if os.path.isfile(p):
+            ffmpeg_bin = os.path.abspath(p)
+            break
+    if not ffmpeg_bin:
+        found_ff = shutil.which("ffmpeg")
+        if found_ff:
+            ffmpeg_bin = os.path.abspath(found_ff)
+
+    # Quét tìm ffprobe
+    for c_dir in candidate_dirs:
+        if not c_dir or not os.path.isdir(c_dir):
+            continue
+        p = os.path.join(c_dir, "ffprobe.exe" if sys.platform == "win32" else "ffprobe")
+        if os.path.isfile(p):
+            ffprobe_bin = os.path.abspath(p)
+            break
+    if not ffprobe_bin:
+        found_probe = shutil.which("ffprobe")
+        if found_probe:
+            ffprobe_bin = os.path.abspath(found_probe)
+
+    # Đưa các thư mục chứa ffmpeg/ffprobe lên đầu PATH
+    dirs_to_add: list[str] = []
+    if ffmpeg_bin:
+        d1 = os.path.dirname(ffmpeg_bin)
+        if d1 not in dirs_to_add:
+            dirs_to_add.append(d1)
+    if ffprobe_bin:
+        d2 = os.path.dirname(ffprobe_bin)
+        if d2 not in dirs_to_add:
+            dirs_to_add.append(d2)
+
+    for d in reversed(dirs_to_add):
+        curr_path = os.environ.get("PATH", "")
+        if d not in curr_path.split(os.pathsep):
+            os.environ["PATH"] = d + os.pathsep + curr_path
+
+    if ffmpeg_bin:
+        os.environ["FFMPEG_BINARY"] = ffmpeg_bin
+        os.environ["IMAGEIO_FFMPEG_EXE"] = ffmpeg_bin
+    if ffprobe_bin:
+        os.environ["FFPROBE_BINARY"] = ffprobe_bin
+
+    return ffmpeg_bin, ffprobe_bin
 
 
 def get_resource_path(relative_path: str) -> str:

@@ -60,6 +60,10 @@ from faster_whisper import WhisperModel
 from gtts import gTTS
 # pyrefly: ignore [missing-import]
 from pydub import AudioSegment
+from core.security import get_base_path
+
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -67,46 +71,105 @@ from pydub import AudioSegment
 # ══════════════════════════════════════════════════════════════════════
 
 def _find_ffmpeg_bin() -> str:
-    """Tìm đường dẫn ffmpeg.exe ưu tiên thư mục gốc dự án và các thư mục tools."""
-    proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    candidates = [
-        os.path.join(proj_dir, "ffmpeg.exe"),
-        os.path.join(proj_dir, "ffmpeg"),
-        os.path.join(proj_dir, "tools", "ffmpeg", "bin", "ffmpeg.exe"),
-        os.path.join(proj_dir, "tools", "ffmpeg.exe"),
-    ]
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
+    """Tìm đường dẫn ffmpeg.exe ưu tiên file đi kèm ứng dụng và các thư mục tools."""
+    try:
+        from core.security import setup_ffmpeg_environment
+        ff, _ = setup_ffmpeg_environment()
+        if ff:
+            return ff
+    except Exception:
+        pass
     found = shutil.which("ffmpeg")
     return found or "ffmpeg"
 
 
 def _find_ffprobe_bin() -> str:
-    """Tìm đường dẫn ffprobe.exe ưu tiên thư mục gốc dự án và các thư mục tools."""
-    proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    candidates = [
-        os.path.join(proj_dir, "ffprobe.exe"),
-        os.path.join(proj_dir, "ffprobe"),
-        os.path.join(proj_dir, "tools", "ffmpeg", "bin", "ffprobe.exe"),
-        os.path.join(proj_dir, "tools", "ffprobe.exe"),
-    ]
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
+    """Tìm đường dẫn ffprobe.exe ưu tiên file đi kèm ứng dụng và các thư mục tools."""
+    try:
+        from core.security import setup_ffmpeg_environment
+        _, ffp = setup_ffmpeg_environment()
+        if ffp:
+            return ffp
+    except Exception:
+        pass
     found = shutil.which("ffprobe")
-    return found or "ffprobe"
+    return os.path.abspath(found) if found else ""
 
 
 FFMPEG_PATH = _find_ffmpeg_bin()
 FFPROBE_PATH = _find_ffprobe_bin()
 
-# Cấu hình pydub sử dụng đúng file binary nội bộ
+
+def has_ffprobe() -> bool:
+    """Kiểm tra hệ thống có ffprobe khả dụng hay không."""
+    return bool(FFPROBE_PATH and os.path.isfile(FFPROBE_PATH))
+
+
+# Cấu hình pydub sử dụng đúng file binary nội bộ & cập nhật PATH môi trường
 if os.path.isfile(FFMPEG_PATH):
     AudioSegment.converter = FFMPEG_PATH
     AudioSegment.ffmpeg = FFMPEG_PATH
-if os.path.isfile(FFPROBE_PATH):
+    f_dir = os.path.dirname(os.path.abspath(FFMPEG_PATH))
+    if f_dir and f_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f_dir + os.pathsep + os.environ.get("PATH", "")
+
+if has_ffprobe():
     AudioSegment.ffprobe = FFPROBE_PATH
+    p_dir = os.path.dirname(os.path.abspath(FFPROBE_PATH))
+    if p_dir and p_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = p_dir + os.pathsep + os.environ.get("PATH", "")
+    try:
+        import pydub.utils
+        pydub.utils.get_prober_name = lambda: FFPROBE_PATH
+    except Exception:
+        pass
+
+
+def _decode_audio_clip(audio_path: str, ffmpeg_bin: str = "", frame_rate: int = 24000) -> AudioSegment:
+    """
+    Giải mã câu thoại linh hoạt qua 2 cơ chế:
+    - Cơ chế 1 (Ưu tiên khi có ffprobe): Dùng pydub chuẩn phân tích metadata và load audio.
+    - Cơ chế 2 (Dự phòng khi KHÔNG có ffprobe): Sử dụng trực tiếp FFmpeg stdin/stdout pipe
+      giải mã sang raw PCM s16le (24kHz, mono) nạp thẳng vào AudioSegment.
+    """
+    # ── CƠ CHẾ 1: Sử dụng ffprobe + pydub nếu có sẵn ffprobe ──
+    if has_ffprobe():
+        try:
+            clip = AudioSegment.from_file(audio_path).set_frame_rate(frame_rate).set_channels(1).set_sample_width(2)
+            if len(clip) > 0:
+                return clip
+        except Exception:
+            # Nếu cơ chế 1 gặp bất kỳ lỗi probe metadata nào, tự động fallback xuống cơ chế 2
+            pass
+
+    # ── CƠ CHẾ 2: Giải mã trực tiếp bằng FFmpeg pipe (hoàn toàn không cần ffprobe) ──
+    bin_path = ffmpeg_bin or FFMPEG_PATH or "ffmpeg"
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    result = subprocess.run(
+        [
+            bin_path, "-nostdin", "-v", "error", "-i", audio_path,
+            "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(frame_rate),
+            "-ac", "1", "pipe:1",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **kwargs,
+    )
+    if result.returncode != 0 or not result.stdout:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(detail or f"FFmpeg không giải mã được {os.path.basename(audio_path)}")
+    return AudioSegment(
+        data=result.stdout,
+        sample_width=2,
+        frame_rate=frame_rate,
+        channels=1,
+    )
+
+
+# Giữ alias hàm tương thích
+_decode_audio_with_ffmpeg = _decode_audio_clip
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -659,7 +722,7 @@ def generate_voice_and_pace(
 
         # 2. Đo thời lượng thực tế
         try:
-            audio_seg = AudioSegment.from_file(raw_audio_path)
+            audio_seg = _decode_audio_with_ffmpeg(raw_audio_path, ffmpeg_bin)
             actual_dur = len(audio_seg) / 1000.0
         except Exception:
             actual_dur = 1.5
@@ -684,7 +747,10 @@ def generate_voice_and_pace(
                 "-vn",
                 paced_audio_path
             ]
-            res = subprocess.run(cmd_pace, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            kwargs = {}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            res = subprocess.run(cmd_pace, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
             if res.returncode == 0 and os.path.exists(paced_audio_path) and os.path.getsize(paced_audio_path) >= 1000:
                 seg.audio_path = paced_audio_path
                 seg.duration_actual = actual_dur / clamped_speed
@@ -711,17 +777,23 @@ def generate_voice_and_pace(
 def build_dubbed_audio_track(
     segments: List[DubSegment],
     output_wav: str,
+    ffmpeg_bin: str = "",
+    progress_cb: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Ghép toàn bộ các câu thoại vào đúng mốc thời gian (Timeline) bằng khoảng lặng."""
     if not segments:
         return False
 
+    bin_path = ffmpeg_bin or FFMPEG_PATH or "ffmpeg"
     valid_audio_count = 0
+    missing_audio_count = 0
+    decode_errors: List[str] = []
     track = AudioSegment.silent(duration=0, frame_rate=24000)
     current_ms = 0
 
     for seg in segments:
         if not seg.audio_path or not os.path.exists(seg.audio_path) or os.path.getsize(seg.audio_path) < 1000:
+            missing_audio_count += 1
             continue
 
         start_ms = int(seg.start * 1000)
@@ -731,19 +803,34 @@ def build_dubbed_audio_track(
             current_ms = start_ms
 
         try:
-            voice_clip = AudioSegment.from_file(seg.audio_path).set_frame_rate(24000)
+            voice_clip = _decode_audio_with_ffmpeg(seg.audio_path, bin_path, frame_rate=24000)
             if len(voice_clip) > 0:
                 track += voice_clip
                 current_ms += len(voice_clip)
                 valid_audio_count += 1
-        except Exception:
+        except Exception as exc:
+            if len(decode_errors) < 3:
+                decode_errors.append(f"{os.path.basename(seg.audio_path)}: {exc}")
             continue
 
     if valid_audio_count == 0 or len(track) == 0:
+        if progress_cb:
+            detail = "; ".join(decode_errors) if decode_errors else "không tìm thấy đoạn âm thanh hợp lệ"
+            progress_cb(
+                f"[AUDIO MIX] Không ghép được câu thoại nào; thiếu/rỗng: {missing_audio_count}/{len(segments)}. "
+                f"Lỗi giải mã mẫu: {detail}"
+            )
         return False
 
     track.export(output_wav, format="wav")
-    return os.path.exists(output_wav) and os.path.getsize(output_wav) >= 1000
+    built = os.path.exists(output_wav) and os.path.getsize(output_wav) >= 1000
+    if progress_cb:
+        mode_str = "FFprobe" if has_ffprobe() else "FFmpeg Direct"
+        progress_cb(
+            f"[AUDIO MIX] Đã ghép {valid_audio_count}/{len(segments)} câu thoại qua cơ chế {mode_str}"
+            f" (thiếu/rỗng: {missing_audio_count})."
+        )
+    return built
 
 
 def render_cinema_dub_video(
@@ -840,7 +927,15 @@ class OmniDubber:
     def __init__(self, whisper_model_size: str = "base", gemini_api_key: str = "") -> None:
         self.ffmpeg = FFMPEG_PATH
         self.gemini_api_key = gemini_api_key
-        self.model = WhisperModel(whisper_model_size, device="cpu", compute_type="int8")
+        bundled_model = os.path.join(
+            get_base_path(), "models", f"faster-whisper-{whisper_model_size}"
+        )
+        model_source = (
+            bundled_model
+            if os.path.isfile(os.path.join(bundled_model, "model.bin"))
+            else whisper_model_size
+        )
+        self.model = WhisperModel(model_source, device="cpu", compute_type="int8")
 
     def transcribe(
         self,
@@ -907,6 +1002,12 @@ class OmniDubber:
         base_name = os.path.splitext(os.path.basename(input_video))[0]
         temp_wav = os.path.join(temp_dir, f"{base_name}_16k.wav")
         full_dub_wav = os.path.join(temp_dir, f"{base_name}_dubtrack.wav")
+        preserve_temp_on_error = False
+
+        if has_ffprobe():
+            log(f"[AUDIO ENGINE] Chế độ âm thanh: Chuẩn FFprobe ({os.path.basename(FFPROBE_PATH)})")
+        else:
+            log("[AUDIO ENGINE] Chế độ âm thanh: FFmpeg Direct PCM (tự động kích hoạt khi không có FFprobe)")
 
         try:
             if custom_segments and len(custom_segments) > 0:
@@ -1018,11 +1119,16 @@ class OmniDubber:
 
             # BƯỚC 4: Hòa trộn âm thanh & Sidechain Ducking
             combined_voice = full_dub_wav
-            built = build_dubbed_audio_track(paced_segments, combined_voice)
+            built = build_dubbed_audio_track(paced_segments, combined_voice, ffmpeg_bin=self.ffmpeg, progress_cb=log)
 
             # CHỐT CHẶN 2: Kiểm tra file âm thanh tiếng Việt tổng hợp trước khi ghép
-            if not os.path.exists(combined_voice) or os.path.getsize(combined_voice) < 1000:
-                raise Exception("LỖI THỰC TẾ: File âm thanh tiếng Việt bị rỗng. Không thể ghép vào video.")
+            if not built or not os.path.exists(combined_voice) or os.path.getsize(combined_voice) < 1000:
+                preserve_temp_on_error = True
+                log(f"[DEBUG] Giữ lại file tạm để chẩn đoán lỗi: {temp_dir}")
+                raise Exception(
+                    "Không tạo được track tiếng Việt hoàn chỉnh. Các file thoại tạm được giữ tại: "
+                    f"{temp_dir}. Kiểm tra log [AUDIO MIX] phía trên để biết lỗi giải mã cụ thể."
+                )
 
             success = render_cinema_dub_video(
                 input_video=input_video,
@@ -1045,7 +1151,7 @@ class OmniDubber:
                 raise RuntimeError("Xuất video thành phẩm thất bại.")
 
         finally:
-            if os.path.exists(temp_dir):
+            if os.path.exists(temp_dir) and not preserve_temp_on_error:
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
 

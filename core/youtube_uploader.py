@@ -254,14 +254,12 @@ def extract_thumbnail_from_video(video_path: str, output_thumb_path: Optional[st
     # Định dạng timestamp hh:mm:ss
     time_str = f"00:00:{at_second:02d}"
 
-    ff_bin = "ffmpeg"
-    if not shutil.which("ffmpeg"):
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        candidate = os.path.join(base_dir, "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
-        if os.path.isfile(candidate):
-            ff_bin = candidate
-        elif os.path.isfile("ffmpeg.exe"):
-            ff_bin = os.path.abspath("ffmpeg.exe")
+    try:
+        from core.security import setup_ffmpeg_environment
+        ff_bin, _ = setup_ffmpeg_environment()
+        ff_bin = ff_bin or "ffmpeg"
+    except Exception:
+        ff_bin = "ffmpeg"
 
     cmd = [
         ff_bin, "-y",

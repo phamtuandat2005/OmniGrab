@@ -120,67 +120,18 @@ goto MENU
 
 
 :BUILD_STANDARD
-call :PREPARE_RUNTIME
-if errorlevel 1 exit /b 1
 echo.
-echo Dang dong goi ban phat hanh day du voi PyInstaller...
-pip install pyinstaller --quiet --upgrade
-
-pyinstaller --noconfirm --clean --noconsole --onedir --name "OmniGrab" --distpath "dist_release" --workpath "build_release_pyinstaller" --icon="%~dp0assets\icon.ico" --add-data "ui;ui" --add-data "core;core" --add-data "assets;assets" --add-binary "%FFMPEG_SOURCE%;." --add-binary "%FFPROBE_SOURCE%;." --add-data "%PLAYWRIGHT_BROWSERS_PATH%;playwright-browsers" --add-data "%WHISPER_MODEL_DIR%;models/faster-whisper-base" --collect-all "playwright" --collect-all "faster_whisper" --collect-all "ctranslate2" --collect-all "curl_cffi" --collect-all "f2" --collect-all "pydub" --collect-all "gtts" --collect-all "deep_translator" --collect-all "cryptography" --collect-all "bs4" --collect-all "av" --collect-all "onnxruntime" --hidden-import "PyQt6" --hidden-import "PyQt6.QtCore" --hidden-import "PyQt6.QtGui" --hidden-import "PyQt6.QtWidgets" --hidden-import "yt_dlp" --hidden-import "audioop" --hidden-import "audioop_lts" --hidden-import "requests" main.py
+echo ========================================================
+echo BAT DAU DONG GOI BAN PHAT HANH DAY DU OMNIGRAB
+echo ========================================================
+python build_release.py
 if errorlevel 1 (
+    echo.
     echo [LOI] Dong goi that bai!
     pause
     exit /b 1
 )
-copy /y "%FFMPEG_SOURCE%" "dist_release\OmniGrab\ffmpeg.exe" >nul 2>&1
-copy /y "%FFPROBE_SOURCE%" "dist_release\OmniGrab\ffprobe.exe" >nul 2>&1
-if not exist "dist_release\OmniGrab\_internal\ffmpeg.exe" copy /y "%FFMPEG_SOURCE%" "dist_release\OmniGrab\_internal\ffmpeg.exe" >nul 2>&1
-if not exist "dist_release\OmniGrab\_internal\ffprobe.exe" copy /y "%FFPROBE_SOURCE%" "dist_release\OmniGrab\_internal\ffprobe.exe" >nul 2>&1
-if not exist "dist_release\OmniGrab\_internal\models\faster-whisper-base\model.bin" (
-    echo [LOI] Ban build thieu mo hinh Whisper base.
-    pause
-    exit /b 1
-)
-set "BUNDLED_CHROMIUM="
-for /r "dist_release\OmniGrab\_internal\playwright-browsers" %%F in (chrome.exe) do if exist "%%F" set "BUNDLED_CHROMIUM=%%F"
-if not defined BUNDLED_CHROMIUM (
-    echo [LOI] Ban build thieu Chromium cua Playwright.
-    pause
-    exit /b 1
-)
-:: Lam moi bo nho dem icon cua Windows de logo hien thi ngay lap tuc
 ie4uinit.exe -show >nul 2>&1
-echo.
-echo DONG GOI THANH CONG! Bo phat hanh: dist_release\OmniGrab\
-echo File chay: dist_release\OmniGrab\OmniGrab.exe
-echo Da kem FFmpeg, FFprobe, Chromium va mo hinh Whisper base.
-set "ISCC="
-for /f "delims=" %%I in ('where ISCC.exe 2^>nul') do if not defined ISCC set "ISCC=%%~fI"
-if not defined ISCC if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
-if not defined ISCC if exist "%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe"
-if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
-if not defined ISCC if exist "%ProgramFiles%\Inno Setup 7\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 7\ISCC.exe"
-if not defined ISCC (
-    echo [CANH BAO] Khong tim thay Inno Setup Compiler (ISCC.exe).
-    echo Thu muc dist_release\OmniGrab\ da san sang, nhung chua tao file cai dat .exe.
-    echo Cai Inno Setup 6 tren may dong goi, sau do chay lai build.bat.
-    pause
-    exit /b 2
-)
-if not exist "dist_installer" mkdir "dist_installer"
-echo Dang tao file cai dat Windows...
-call "%ISCC%" /Qp /DAppDistDir=dist_release setup.iss
-if errorlevel 1 (
-    echo [LOI] Inno Setup khong tao duoc installer.
-    pause
-    exit /b 1
-)
-if not exist "dist_installer\OmniGrab.Setup.4.0.0.exe" (
-    echo [LOI] Khong tim thay file installer sau khi bien dich.
-    pause
-    exit /b 1
-)
-echo FILE CAI DAT: dist_installer\OmniGrab.Setup.4.0.0.exe
 pause
 exit /b 0
 
@@ -257,8 +208,14 @@ set "FOUND_CHROME="
 for /r "%PLAYWRIGHT_BROWSERS_PATH%" %%F in (chrome.exe) do if exist "%%F" set "FOUND_CHROME=%%F"
 if not defined FOUND_CHROME (
     if exist "%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win64\chrome.exe" (
-        echo [INFO] Sao chep Chromium tu cache he thong...
-        xcopy /s /i /y "%LOCALAPPDATA%\ms-playwright\chromium-*" "%PLAYWRIGHT_BROWSERS_PATH%\chromium-local" >nul 2>&1
+        for /d %%D in ("%LOCALAPPDATA%\ms-playwright\chromium-*") do (
+            echo "%%~nxD" | findstr /i "headless" >nul || (
+                if exist "%%D\chrome-win64\chrome.exe" (
+                    echo [INFO] Sao chep Chromium tu cache he thong: %%~nxD...
+                    xcopy /s /i /y "%%D" "%PLAYWRIGHT_BROWSERS_PATH%\%%~nxD" >nul 2>&1
+                )
+            )
+        )
     )
 )
 for /r "%PLAYWRIGHT_BROWSERS_PATH%" %%F in (chrome.exe) do if exist "%%F" set "FOUND_CHROME=%%F"

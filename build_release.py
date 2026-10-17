@@ -2,12 +2,13 @@
 build_release.py - Script tự động hóa toàn diện quy trình đóng gói OmniGrab.
 
 Quy trình tự động thực hiện:
-1. Kiểm tra môi trường (Python, venv, ffmpeg.exe, ffprobe.exe).
-2. Dọn dẹp thư mục build/dist cũ.
-3. Đóng gói ứng dụng thành file thực thi độc lập (PyInstaller với OmniGrab.spec).
-4. Tích hợp đầy đủ FFmpeg và FFprobe vào cả thư mục gốc và _internal.
-5. Đóng gói bản Portable (ZIP) sẵn sàng chia sẻ.
-6. Biên dịch bộ cài đặt Windows chuyên nghiệp (.exe) bằng Inno Setup (nếu có).
+1. Kiểm tra môi trường (Python 64-bit, venv, ffmpeg.exe, ffprobe.exe).
+2. Chuẩn bị tài nguyên runtime (Playwright Chromium, mô hình Whisper base).
+3. Dọn dẹp thư mục build/dist cũ.
+4. Đóng gói ứng dụng thành file thực thi độc lập (PyInstaller với OmniGrab.spec).
+5. Tích hợp đầy đủ FFmpeg và FFprobe vào cả thư mục gốc và _internal.
+6. Đóng gói bản Portable (ZIP) sẵn sàng chia sẻ.
+7. Biên dịch bộ cài đặt Windows chuyên nghiệp (.exe) bằng Inno Setup (nếu có).
 """
 
 from __future__ import annotations
@@ -34,6 +35,9 @@ DIST_DIR = ROOT_DIR / "dist" / "OmniGrab"
 BUILD_DIR = ROOT_DIR / "build"
 OUT_INSTALLER_DIR = ROOT_DIR / "dist_installer"
 SPEC_FILE = ROOT_DIR / "OmniGrab.spec"
+RUNTIME_DIR = ROOT_DIR / "build_runtime"
+PLAYWRIGHT_RUNTIME = RUNTIME_DIR / "playwright-browsers"
+WHISPER_RUNTIME = RUNTIME_DIR / "models" / "faster-whisper-base"
 
 VERSION = "4.0.0"
 
@@ -51,11 +55,19 @@ def log(msg: str, level: str = "INFO") -> None:
 def check_prerequisites() -> tuple[Path, Path]:
     log("Kiểm tra các thành phần bắt buộc...")
 
+    if sys.version_info < (3, 10):
+        log("Cần Python 3.10 trở lên để đóng gói!", "ERROR")
+        sys.exit(1)
+
+    import struct
+    if struct.calcsize("P") != 8:
+        log("Cần Python 64-bit để tạo bản phát hành Windows x64!", "ERROR")
+        sys.exit(1)
+
     ffmpeg_path = ROOT_DIR / "ffmpeg.exe"
     ffprobe_path = ROOT_DIR / "ffprobe.exe"
 
     if not ffmpeg_path.is_file():
-        # Kiểm tra tools/ffmpeg/bin/ffmpeg.exe
         alt = ROOT_DIR / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
         if alt.is_file():
             ffmpeg_path = alt
@@ -76,9 +88,54 @@ def check_prerequisites() -> tuple[Path, Path]:
     return ffmpeg_path, ffprobe_path
 
 
+def prepare_runtime() -> None:
+    log("Chuẩn bị tài nguyên runtime (Chromium và Whisper)...")
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    PLAYWRIGHT_RUNTIME.mkdir(parents=True, exist_ok=True)
+    WHISPER_RUNTIME.mkdir(parents=True, exist_ok=True)
+
+    # 1. Chromium
+    has_chrome = any(PLAYWRIGHT_RUNTIME.rglob("chrome.exe"))
+    if not has_chrome:
+        ms_playwright = Path(os.path.expandvars(r"%LOCALAPPDATA%\ms-playwright"))
+        copied = False
+        if ms_playwright.is_dir():
+            for d in sorted(ms_playwright.glob("chromium-*")):
+                # Chỉ lấy thư mục chromium thật, bỏ qua headless shell
+                if "headless" in d.name:
+                    continue
+                if (d / "chrome-win64" / "chrome.exe").is_file():
+                    target = PLAYWRIGHT_RUNTIME / d.name
+                    log(f"Sao chép Chromium ({d.name}) vào {target}...", "INFO")
+                    shutil.copytree(d, target, dirs_exist_ok=True)
+                    copied = True
+                    break
+        if not copied:
+            log("Tải Chromium qua Playwright...", "INFO")
+            env = os.environ.copy()
+            env["PLAYWRIGHT_BROWSERS_PATH"] = str(PLAYWRIGHT_RUNTIME)
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], env=env, check=True)
+
+    if not any(PLAYWRIGHT_RUNTIME.rglob("chrome.exe")):
+        log("Không tìm thấy chrome.exe trong playwright-browsers!", "ERROR")
+        sys.exit(1)
+    log("Chromium đã sẵn sàng.", "SUCCESS")
+
+    # 2. Whisper Model base
+    if not (WHISPER_RUNTIME / "model.bin").is_file():
+        log("Chuẩn bị mô hình Whisper base...", "INFO")
+        from faster_whisper.utils import download_model
+        download_model("base", output_dir=str(WHISPER_RUNTIME))
+
+    if not (WHISPER_RUNTIME / "model.bin").is_file():
+        log("Không tìm thấy model.bin của mô hình Whisper!", "ERROR")
+        sys.exit(1)
+    log("Mô hình Whisper base đã sẵn sàng.", "SUCCESS")
+
+
 def clean_previous_builds() -> None:
     log("Dọn dẹp thư mục build cũ...")
-    for p in [BUILD_DIR, ROOT_DIR / "dist"]:
+    for p in [BUILD_DIR, ROOT_DIR / "dist", ROOT_DIR / "dist_release", ROOT_DIR / "build_release_pyinstaller"]:
         if p.exists():
             try:
                 shutil.rmtree(p, ignore_errors=True)
@@ -107,7 +164,7 @@ def run_pyinstaller() -> None:
 
 
 def verify_and_copy_binaries(ffmpeg_src: Path, ffprobe_src: Path) -> None:
-    log("Đồng bộ và xác nhận FFmpeg & FFprobe trong gói phát hành...")
+    log("Đồng bộ và xác nhận các thành phần trong gói phát hành...")
 
     if not DIST_DIR.exists():
         log(f"Không tìm thấy thư mục phân phối {DIST_DIR}!", "ERROR")
@@ -150,8 +207,10 @@ def find_iscc() -> Path | None:
     """Tìm trình biên dịch Inno Setup (ISCC.exe)."""
     candidates = [
         Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 7" / "ISCC.exe",
         Path("C:/Program Files (x86)/Inno Setup 6/ISCC.exe"),
         Path("C:/Program Files/Inno Setup 6/ISCC.exe"),
+        Path("C:/Program Files/Inno Setup 7/ISCC.exe"),
     ]
     for c in candidates:
         if c.is_file():
@@ -179,7 +238,7 @@ def build_installer() -> None:
         return
 
     log("Đang biên dịch Bộ cài đặt chuyên nghiệp (Inno Setup)...")
-    cmd = [str(iscc_path), str(iss_file)]
+    cmd = [str(iscc_path), f"/DAppDistDir={DIST_DIR.parent}", str(iss_file)]
     res = subprocess.run(cmd, cwd=str(ROOT_DIR))
     if res.returncode == 0:
         installer_candidates = list(OUT_INSTALLER_DIR.glob("*.exe"))
@@ -216,6 +275,7 @@ def main() -> None:
     print("=" * 64)
 
     ffmpeg_src, ffprobe_src = check_prerequisites()
+    prepare_runtime()
     clean_previous_builds()
     run_pyinstaller()
     verify_and_copy_binaries(ffmpeg_src, ffprobe_src)
@@ -228,7 +288,7 @@ def main() -> None:
     print(f"1. Thư mục chạy trực tiếp (Standalone App):")
     print(f"   -> {DIST_DIR / 'OmniGrab.exe'}")
     print(f"2. File cài đặt cho người dùng cuối (Installer Setup):")
-    print(f"   -> {OUT_INSTALLER_DIR / f'OmniGrab_Setup_v{VERSION}.exe'}")
+    print(f"   -> {OUT_INSTALLER_DIR / f'OmniGrab.Setup.{VERSION}.exe'}")
     print(f"3. Bản nén không cần cài đặt (Portable ZIP):")
     print(f"   -> {OUT_INSTALLER_DIR / f'OmniGrab_v{VERSION}_Portable.zip'}")
     print("=" * 64)

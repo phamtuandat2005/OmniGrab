@@ -7,7 +7,7 @@
 #define MyAppURL "https://github.com/phamtuandat2005/OmniGrab"
 #define MyAppExeName "OmniGrab.exe"
 #ifndef AppDistDir
-  #define AppDistDir "dist_release"
+  #define AppDistDir "dist"
 #endif
 
 [Setup]
@@ -26,8 +26,9 @@ AllowNoIcons=yes
 OutputDir=dist_installer
 OutputBaseFilename=OmniGrab.Setup.{#MyAppVersion}
 SetupIconFile=assets\icon.ico
-Compression=lzma2
-SolidCompression=yes
+Compression=lzma2/fast
+SolidCompression=no
+LZMAUseSeparateProcess=yes
 WizardStyle=modern
 DisableWelcomePage=no
 DisableProgramGroupPage=yes

@@ -202,6 +202,12 @@ def verify_and_copy_binaries(ffmpeg_src: Path, ffprobe_src: Path) -> None:
         if src_ico.is_file() and not dest_ico.is_file():
             shutil.copy2(src_ico, dest_ico)
 
+    # 4. Làm mới bộ nhớ đệm icon của Windows
+    try:
+        subprocess.run(["ie4uinit.exe", "-show"], check=False)
+    except Exception:
+        pass
+
 
 def find_iscc() -> Path | None:
     """Tìm trình biên dịch Inno Setup (ISCC.exe)."""

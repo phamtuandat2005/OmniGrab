@@ -77,36 +77,60 @@ setup_ffmpeg_environment()
 
 def _ensure_windows_shortcut(ico_path: str) -> None:
     """Đăng ký shortcut Start Menu có kèm AppUserModelID để Windows Shell luôn hiển thị icon."""
-    if sys.platform != "win32" or getattr(sys, "frozen", False):
+    if sys.platform != "win32":
         return
     try:
         import win32com.client
         from win32com.propsys import propsys, pscon
 
         shortcut_path = os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\OmniGrab.lnk")
-        abs_ico = os.path.abspath(ico_path)
-        if not os.path.isfile(abs_ico):
-            return
-
         shell = win32com.client.Dispatch("WScript.Shell")
-        shortcut = shell.CreateShortCut(shortcut_path)
-        shortcut.TargetPath = sys.executable
-        shortcut.Arguments = f'"{os.path.abspath(sys.argv[0])}"'
-        shortcut.WorkingDirectory = os.path.dirname(os.path.abspath(sys.argv[0]))
-        shortcut.IconLocation = f"{abs_ico},0"
-        shortcut.Save()
+        is_frozen = getattr(sys, "frozen", False)
 
-        store = propsys.SHGetPropertyStoreFromParsingName(shortcut_path, None, 2)
-        if store:
-            store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType("OmniGrab.VideoDownloader.1.0"))
-            store.Commit()
+        target_exe = os.path.abspath(sys.executable)
+        if is_frozen:
+            target_args = ""
+            target_dir = os.path.dirname(target_exe)
+            # Ưu tiên icon nhúng trực tiếp trong file exe để luôn hợp lệ vĩnh viễn
+            icon_loc = f"{target_exe},0"
+        else:
+            target_args = f'"{os.path.abspath(sys.argv[0])}"'
+            target_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+            abs_ico = os.path.abspath(ico_path)
+            icon_loc = f"{abs_ico},0" if os.path.isfile(abs_ico) else f"{target_exe},0"
+
+        need_update = True
+        if os.path.isfile(shortcut_path):
+            try:
+                existing = shell.CreateShortCut(shortcut_path)
+                old_ico = existing.IconLocation.split(",")[0].strip('"')
+                # Nếu icon cũ trỏ vào file không tồn tại (ví dụ thư mục Temp bị xóa) hoặc TargetPath khác
+                if old_ico and not os.path.isfile(old_ico):
+                    need_update = True
+                elif existing.TargetPath.lower() == target_exe.lower() and existing.IconLocation == icon_loc:
+                    need_update = False
+            except Exception:
+                need_update = True
+
+        if need_update:
+            shortcut = shell.CreateShortCut(shortcut_path)
+            shortcut.TargetPath = target_exe
+            shortcut.Arguments = target_args
+            shortcut.WorkingDirectory = target_dir
+            shortcut.IconLocation = icon_loc
+            shortcut.Save()
+
+            store = propsys.SHGetPropertyStoreFromParsingName(shortcut_path, None, 2)
+            if store:
+                store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType("OmniGrab.VideoDownloader.1.0"))
+                store.Commit()
     except Exception:
         pass
 
 
 def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
     """Ép Windows Taskbar và Titlebar hiển thị Icon thông qua Win32 API và Shell Property Store."""
-    if sys.platform != "win32" or not os.path.isfile(ico_path):
+    if sys.platform != "win32":
         return
     try:
         import ctypes
@@ -122,6 +146,7 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
         GCLP_HICONSM = -34
 
         user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
 
         LoadImage = user32.LoadImageW
         LoadImage.argtypes = [
@@ -148,16 +173,21 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
         if is_frozen and sys.executable:
             # Trong file .exe: Trích xuất trực tiếp icon nhúng từ PE header
             try:
-                shell32 = ctypes.windll.shell32
                 h_big = wintypes.HICON()
                 h_small = wintypes.HICON()
+                shell32.ExtractIconExW.argtypes = [
+                    wintypes.LPCWSTR, ctypes.c_int,
+                    ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.HICON),
+                    wintypes.UINT
+                ]
+                shell32.ExtractIconExW.restype = wintypes.UINT
                 n = shell32.ExtractIconExW(sys.executable, 0, ctypes.byref(h_big), ctypes.byref(h_small), 1)
                 if n > 0:
                     hicon_big = h_big.value
                     hicon_small = h_small.value
             except Exception:
                 pass
-            relaunch_target = f"{sys.executable},0"
+            relaunch_target = f"{os.path.abspath(sys.executable)},0"
         else:
             abs_path = os.path.abspath(ico_path)
             relaunch_target = f"{abs_path},0"
@@ -192,6 +222,12 @@ def _setup_windows_taskbar_icon(hwnd_id: int, ico_path: str) -> None:
                 store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType("OmniGrab.VideoDownloader.1.0"))
                 store.SetValue(pscon.PKEY_AppUserModel_RelaunchIconResource, propsys.PROPVARIANTType(relaunch_target))
                 store.Commit()
+        except Exception:
+            pass
+
+        # 3. Yêu cầu Windows Shell cập nhật thay đổi icon
+        try:
+            shell32.SHChangeNotify(0x08000000, 0x0000, None, None)  # SHCNE_ASSOCCHANGED
         except Exception:
             pass
 

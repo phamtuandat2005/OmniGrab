@@ -57,3 +57,4 @@ profiles/
 *cookies.txt
 client_secrets*.json
 token*.json
+.agents/*

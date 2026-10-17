@@ -6,6 +6,7 @@
 #define MyAppPublisher "OmniGrab Team"
 #define MyAppURL "https://github.com/phamtuandat2005/OmniGrab"
 #define MyAppExeName "OmniGrab.exe"
+#define MyAppID "OmniGrab.VideoDownloader.1.0"
 #ifndef AppDistDir
   #define AppDistDir "dist"
 #endif
@@ -44,15 +45,19 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Dirs]
 Name: "{commonappdata}\OmniGrab"; Permissions: users-modify
 
+[InstallDelete]
+; Xoa shortcut cu co the bi luu sai IconLocation vao thu muc Temp
+Type: files; Name: "{userprograms}\OmniGrab.lnk"
+
 [Files]
 ; Sao chep toan bo thu muc phan phoi da dong goi gom file .exe, thu vien, ffmpeg, ffprobe, assets
 Source: "{#AppDistDir}\OmniGrab\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\icon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppID}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppID}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

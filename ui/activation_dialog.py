@@ -702,7 +702,7 @@ class ActivationDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
-        btn_contact = QPushButton("💬 Hỗ trợ Admin")
+        btn_contact = QPushButton("💬 Zalo: 0342374729  |  Telegram: @pamtuandat")
         btn_contact.setFixedHeight(34)
         btn_contact.setStyleSheet(f"""
             QPushButton {{

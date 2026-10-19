@@ -1168,7 +1168,7 @@ class MainWindow(QMainWindow):
         url_row = QHBoxLayout()
         self._channel_url_input = QLineEdit()
         self._channel_url_input.setPlaceholderText(
-            "https://www.tiktok.com/@username   |   https://www.douyin.com/user/xxx   |   https://www.facebook.com/pagename"
+            "TikTok: @username  |  Douyin: /user/xxx  |  Facebook: /pagename hoặc profile.php?id=...&sk=reels_tab"
         )
         url_row.addWidget(self._channel_url_input, 1)
 

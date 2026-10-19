@@ -152,6 +152,8 @@ Tài liệu này là checklist kiểm thử thủ công dựa trên luồng hi�
 | SCAN-029 | P1 / I | Có kết quả TikTok dạng `https://www.tiktok.com/@user/video/<id>` | Nhấp URL/nhấp đúp để mở, sau đó thử menu chuột phải mở URL gốc và sao chép URL | Thao tác mở mặc định dùng `https://www.tiktok.com/player/v1/<id>`; URL gốc vẫn giữ để mở/copy/tải; TikTok player có thể vẫn từ chối theo phiên/vùng/chính sách | — |
 | SCAN-030 | P1 / I | Kênh/playlist YouTube có video công khai với metadata hiển thị | Quét vài mục và so sánh bảng với trang video | yt-dlp phân giải chi tiết; duration/date/likes xuất hiện khi YouTube cung cấp; trường không công khai có thể vẫn là `--`; quét có thể lâu hơn flat mode | — |
 | SCAN-031 | P1 / R | Cài ứng dụng bằng Setup vào thư mục mặc định `Program Files`; chạy bằng tài khoản Windows thường | Quét một kênh Douyin | Không báo `WinError 5` khi tạo log; thư mục làm việc/log nằm trong `%LOCALAPPDATA%\OmniGrab` | — |
+| SCAN-032 | P1 / I | Có link Facebook profile dạng `https://www.facebook.com/profile.php?id=<ID>&sk=reels_tab` và quyền xem reels | Dán link vào trang Quét kênh, nạp cookie nếu profile yêu cầu đăng nhập rồi quét | URL không bị nối nhầm `/videos` vào query; bộ quét lấy danh sách reels hoặc báo rõ nếu Facebook không cho truy cập | — |
+| SCAN-033 | P1 / I | Facebook trả metadata lượt xem/reaction trong JSON nhúng, bao gồm các trường `play_count_reduced`, `video_view_count`, `reaction_count` hoặc `like_count` | Quét một profile/reels có số liệu hiện trên Facebook | Cột Lượt xem và Lượt thích hiển thị số đã parse; giá trị 0 ở bản ghi trùng không ghi đè số liệu dương đã tìm được; nếu Facebook không cung cấp metadata thì vẫn hiển thị `--` | — |
 
 ## 8. Studio, phiên âm, dịch và lồng tiếng
 

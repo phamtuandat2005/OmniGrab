@@ -21,7 +21,7 @@ import time
 from datetime import date, datetime
 from http.cookiejar import MozillaCookieJar
 from typing import Callable, List, Optional
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -38,6 +38,41 @@ def is_facebook_channel(url: str) -> bool:
     """Kiểm tra URL có phải là trang / profile / video Facebook."""
     u = url.lower()
     return "facebook.com" in u or "fb.com" in u or "fb.watch" in u
+
+
+def _facebook_video_list_url(channel_url: str) -> str:
+    """Chuẩn hoá URL trang Facebook và giữ nguyên tab video của profile.php."""
+    clean_url = channel_url.strip().rstrip("/")
+    for pref in (
+        "https://mbasic.facebook.com",
+        "https://m.facebook.com",
+        "http://facebook.com",
+        "https://web.facebook.com",
+    ):
+        if clean_url.startswith(pref):
+            clean_url = clean_url.replace(pref, "https://www.facebook.com", 1)
+            break
+    if not clean_url.startswith("https://www.facebook.com"):
+        clean_url = "https://www.facebook.com/" + clean_url.lstrip("/")
+
+    parsed = urlparse(clean_url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    profile_tab = query.get("sk", [])
+    if (
+        parsed.path.rstrip("/").casefold() == "/profile.php"
+        and query.get("id")
+        and any(tab in {"videos", "reels_tab"} for tab in profile_tab)
+    ):
+        return parsed.geturl()
+
+    has_video_tab = (
+        parsed.path.endswith("/videos")
+        or "/videos" in parsed.path
+        or "/reels" in parsed.path
+    )
+    if not has_video_tab:
+        parsed = parsed._replace(path=parsed.path.rstrip("/") + "/videos")
+    return urlunparse(parsed)
 
 
 def parse_cookie_file(cookie_file: str) -> dict[str, str]:
@@ -106,6 +141,39 @@ def _fmt_duration(secs) -> str:
     mins, s = divmod(secs, 60)
     h, m = divmod(mins, 60)
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def _parse_facebook_count(value) -> int:
+    """Đọc số đếm từ giá trị thô hoặc chuỗi rút gọn do Facebook trả về."""
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    if isinstance(value, dict):
+        for key in ("count", "value", "total_count", "formatted_count", "text"):
+            if key in value:
+                count = _parse_facebook_count(value[key])
+                if count:
+                    return count
+        return 0
+    if not isinstance(value, str):
+        return 0
+
+    match = re.search(r"(?<!\w)(\d[\d.,]*)\s*([KMB])?", value.strip(), re.IGNORECASE)
+    if not match:
+        return 0
+    number = match.group(1)
+    suffix = (match.group(2) or "").upper()
+    if suffix:
+        number = number.replace(",", ".")
+        try:
+            multiplier = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[suffix]
+            return max(0, int(float(number) * multiplier))
+        except ValueError:
+            return 0
+
+    digits = re.sub(r"\D", "", number)
+    return int(digits) if digits else 0
 
 
 def _fmt_upload_date(ts) -> tuple[str, str]:
@@ -585,19 +653,7 @@ def scan_facebook_channel(
     # ══════════════════════════════════════════════════════════════════
     _log("🔍 [Facebook] Đang phân giải liên kết trang...")
 
-    # Chuẩn hoá URL thành dạng https://www.facebook.com/.../videos
-    clean_url = channel_url.strip().rstrip("/")
-    for pref in ["https://mbasic.facebook.com", "https://m.facebook.com", "http://facebook.com", "https://web.facebook.com"]:
-        if clean_url.startswith(pref):
-            clean_url = clean_url.replace(pref, "https://www.facebook.com", 1)
-            break
-    if not clean_url.startswith("https://www.facebook.com"):
-        clean_url = "https://www.facebook.com/" + clean_url.lstrip("/")
-
-    if not clean_url.endswith("/videos") and "/videos" not in clean_url and "/reels" not in clean_url:
-        target_url = clean_url + "/videos"
-    else:
-        target_url = clean_url
+    target_url = _facebook_video_list_url(channel_url)
 
     _log(f"🔍 [Facebook] Đang truy xuất danh sách video từ: {target_url}")
 
@@ -630,6 +686,20 @@ def scan_facebook_channel(
 
                 vmeta = video_records[vid_id]
 
+                def find_metric(value, field_names: set[str]) -> int:
+                    found = 0
+                    if isinstance(value, dict):
+                        for key, child in value.items():
+                            normalized_key = re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower()
+                            if normalized_key in field_names:
+                                found = max(found, _parse_facebook_count(child))
+                            if isinstance(child, (dict, list)):
+                                found = max(found, find_metric(child, field_names))
+                    elif isinstance(value, list):
+                        for child in value:
+                            found = max(found, find_metric(child, field_names))
+                    return found
+
                 # Thời lượng video
                 dur = obj.get("playable_duration")
                 if not dur and "video" in obj and isinstance(obj["video"], dict):
@@ -645,30 +715,29 @@ def scan_facebook_channel(
                     except Exception:
                         pass
 
-                # Lượt xem (play_count)
-                views = obj.get("play_count")
-                if not views and "video" in obj and isinstance(obj["video"], dict):
-                    views = obj["video"].get("play_count")
-                if views and not vmeta["views_raw"]:
-                    try:
-                        vmeta["views_raw"] = int(views)
-                    except Exception:
-                        pass
-
-                # Lượt thích / tương tác (reaction_count)
-                fb_info = obj.get("feedback")
-                if isinstance(fb_info, dict) and "reaction_count" in fb_info:
-                    rc = fb_info["reaction_count"]
-                    try:
-                        vmeta["likes_raw"] = int(rc.get("count", 0) if isinstance(rc, dict) else rc)
-                    except Exception:
-                        pass
-                elif "reaction_count" in obj and not vmeta["likes_raw"]:
-                    rc = obj["reaction_count"]
-                    try:
-                        vmeta["likes_raw"] = int(rc.get("count", 0) if isinstance(rc, dict) else rc)
-                    except Exception:
-                        pass
+                views = find_metric(
+                    obj,
+                    {
+                        "play_count",
+                        "play_count_reduced",
+                        "video_view_count",
+                        "video_viewer_count",
+                        "view_count",
+                        "view_count_text",
+                    },
+                )
+                likes = find_metric(
+                    obj,
+                    {
+                        "reaction_count",
+                        "reaction_count_reduced",
+                        "total_reaction_count",
+                        "like_count",
+                        "like_count_reduced",
+                    },
+                )
+                vmeta["views_raw"] = max(vmeta["views_raw"], views)
+                vmeta["likes_raw"] = max(vmeta["likes_raw"], likes)
 
                 # Tiêu đề / Mô tả
                 t_obj = obj.get("savable_title") or obj.get("video_title") or obj.get("message")
@@ -724,9 +793,12 @@ def scan_facebook_channel(
                 continue
 
             html_text = resp.text
-            scripts = re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html_text)
-            for script in scripts:
-                if any(kw in script for kw in ["ChannelTabVideo", "all_videos", "_videos", "playable_duration", "play_count", "play_count_reduced", "aggregated_fb_shorts"]):
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_text, "html.parser")
+            scripts = soup.find_all("script", type="application/json")
+            for script_tag in scripts:
+                script = script_tag.string or script_tag.get_text()
+                if any(kw in script for kw in ["ChannelTabVideo", "all_videos", "_videos", "playable_duration", "play_count", "play_count_reduced", "video_view_count", "view_count", "reaction_count", "like_count", "aggregated_fb_shorts"]):
                     try:
                         _parse_fb_json_objects(json.loads(script))
                     except Exception:
@@ -743,8 +815,6 @@ def scan_facebook_channel(
                         seen_ids.add(vid)
                         collected_vids.append(vid)
 
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html_text, "html.parser")
             for anchor in soup.find_all("a", href=True):
                 href = anchor.get("href", "")
                 if not any(token in href.lower() for token in ("cursor", "after=", "before=", "pagelet", "section_id", "videos")):

@@ -151,6 +151,7 @@ Tài liệu này là checklist kiểm thử thủ công dựa trên luồng hi�
 | SCAN-028 | P1 / F | Nguồn chỉ trả tối đa một trang hoặc yêu cầu login trang kế | Chọn `All` | Kết quả bằng dữ liệu nguồn thực trả; app ghi lỗi/dừng đúng cách và không khẳng định đã lấy hết kho video của nền tảng | — |
 | SCAN-029 | P1 / I | Có kết quả TikTok dạng `https://www.tiktok.com/@user/video/<id>` | Nhấp URL/nhấp đúp để mở, sau đó thử menu chuột phải mở URL gốc và sao chép URL | Thao tác mở mặc định dùng `https://www.tiktok.com/player/v1/<id>`; URL gốc vẫn giữ để mở/copy/tải; TikTok player có thể vẫn từ chối theo phiên/vùng/chính sách | — |
 | SCAN-030 | P1 / I | Kênh/playlist YouTube có video công khai với metadata hiển thị | Quét vài mục và so sánh bảng với trang video | yt-dlp phân giải chi tiết; duration/date/likes xuất hiện khi YouTube cung cấp; trường không công khai có thể vẫn là `--`; quét có thể lâu hơn flat mode | — |
+| SCAN-031 | P1 / R | Cài ứng dụng bằng Setup vào thư mục mặc định `Program Files`; chạy bằng tài khoản Windows thường | Quét một kênh Douyin | Không báo `WinError 5` khi tạo log; thư mục làm việc/log nằm trong `%LOCALAPPDATA%\OmniGrab` | — |
 
 ## 8. Studio, phiên âm, dịch và lồng tiếng
 

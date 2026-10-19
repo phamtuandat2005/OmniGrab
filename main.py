@@ -8,6 +8,19 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
+
+
+if (
+    sys.platform == "win32"
+    and getattr(sys, "frozen", False)
+    and not os.access(os.getcwd(), os.W_OK)
+):
+    _local_app_data = os.environ.get("LOCALAPPDATA")
+    _user_data_root = Path(_local_app_data) if _local_app_data else Path.home() / "AppData" / "Local"
+    _user_data_dir = _user_data_root / "OmniGrab"
+    _user_data_dir.mkdir(parents=True, exist_ok=True)
+    os.chdir(_user_data_dir)
 
 # Dung Chromium di kem ban phat hanh, khong phu thuoc Chrome/Edge tren may khach.
 if sys.platform == "win32" and getattr(sys, "frozen", False):

@@ -2,7 +2,7 @@
 ; Ho tro Windows 10/11 x64, tu dong tich hop FFmpeg, FFprobe va tat ca thu vien
 
 #define MyAppName "OmniGrab"
-#define MyAppVersion "4.0.0"
+#define MyAppVersion "4.0.1"
 #define MyAppPublisher "OmniGrab Team"
 #define MyAppURL "https://github.com/phamtuandat2005/OmniGrab"
 #define MyAppExeName "OmniGrab.exe"

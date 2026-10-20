@@ -20,6 +20,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+from core.version import APP_VERSION
+
 if sys.platform == "win32":
     try:
         if sys.stdout is not None:
@@ -39,7 +41,7 @@ RUNTIME_DIR = ROOT_DIR / "build_runtime"
 PLAYWRIGHT_RUNTIME = RUNTIME_DIR / "playwright-browsers"
 WHISPER_RUNTIME = RUNTIME_DIR / "models" / "faster-whisper-base"
 
-VERSION = "4.0.0"
+VERSION = APP_VERSION
 
 
 def log(msg: str, level: str = "INFO") -> None:

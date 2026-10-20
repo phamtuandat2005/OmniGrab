@@ -196,7 +196,7 @@ Cookie là thông tin xác thực tương đương một phiên đăng nhập. C
 
 1. Chọn **1** trong menu build, hoặc chạy `build.bat 1`.
 2. PyInstaller tạo thư mục chạy `dist_release/OmniGrab/`, đưa FFmpeg, FFprobe, Chromium và Whisper base vào cùng gói, rồi kiểm tra các thành phần bắt buộc.
-3. Nếu tìm thấy Inno Setup 6/7, script tự tạo file cài đặt `dist_installer/OmniGrab.Setup.4.0.0.exe`. Đây là file gửi cho khách hàng; họ không cần Python, FFmpeg, FFprobe hay trình duyệt cài sẵn.
+3. Nếu tìm thấy Inno Setup 6/7, script tự tạo file cài đặt `dist_installer/OmniGrab.Setup.<version>.exe` (version lấy từ `core/version.py`). Đây là file gửi cho khách hàng; họ không cần Python, FFmpeg, FFprobe hay trình duyệt cài sẵn.
 
 Đặt cả `ffmpeg.exe` và `ffprobe.exe` ở thư mục gốc dự án, `tools\ffmpeg\bin`, hoặc thêm vào `PATH`. Build dừng nếu không tìm thấy/chạy được một trong hai. Nếu Inno Setup chưa cài trên máy build, thư mục `dist_release/OmniGrab/` vẫn được tạo nhưng installer `.exe` sẽ chưa có; cài Inno Setup 6 rồi chạy lại `build.bat 1`.
 
@@ -207,6 +207,12 @@ Cookie là thông tin xác thực tương đương một phiên đăng nhập. C
 ### Installer Windows
 
 `setup.iss` là script Inno Setup chép toàn bộ `dist\OmniGrab\*`, tạo shortcut Start Menu và tùy chọn shortcut Desktop. Bộ cài yêu cầu Windows x64 và quyền cài đặt; Chromium cùng mô hình Whisper base được đưa vào để khách hàng không phải tải/cài riêng các thành phần runtime này.
+
+### Cập nhật phiên bản
+
+Ứng dụng tự kiểm tra GitHub Releases sau khi khởi động và có thể kiểm tra thủ công trong **Trợ giúp → Kiểm tra cập nhật...**. Nếu tìm thấy phiên bản mới, OmniGrab mở file Setup của release trong trình duyệt; người dùng xác nhận cài đặt. Việc kiểm tra cần Internet và không chặn khởi động nếu GitHub không truy cập được.
+
+Khi phát hành, tăng `APP_VERSION` trong `core/version.py`, đồng bộ `MyAppVersion` trong `setup.iss`, build lại Setup, tạo GitHub Release rồi đính kèm file có tên chính xác `OmniGrab.Setup.<version>.exe` (ví dụ `OmniGrab.Setup.4.0.1.exe`). Bộ kiểm tra so sánh version từ tên file Setup trong release, không phải Git tag; điều này cho phép tag release giữ quy ước hiện có miễn file cài đặt mang version sản phẩm đúng.
 
 ## Cấu trúc repository
 

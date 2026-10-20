@@ -79,6 +79,7 @@ Tài liệu này là checklist kiểm thử thủ công dựa trên luồng hi�
 | APP-012 | P2 / F | Cửa sổ mở | Chọn file cookie tải video; đóng/mở lại | Cookie tồn tại thì trạng thái được nạp lại; file mất thì không được sử dụng như hợp lệ | — |
 | APP-013 | P2 / UI | Màn hình DPI cao hoặc scale 150% | Mở và chuyển trang | Font, nút, bảng và dialog không bị vỡ nghiêm trọng | — |
 | APP-014 | P1 / E | Không có quyền ghi vào thư mục output (nếu có thể mô phỏng) | Chọn thư mục chỉ đọc rồi bắt đầu tải | Hiện lỗi rõ ràng, không khóa giao diện hoặc crash | — |
+| APP-015 | P1 / I | Có GitHub Release mới kèm `OmniGrab.Setup.x.y.z.exe` | Khởi động app hoặc chọn Trợ giúp → Kiểm tra cập nhật | App so version sản phẩm, hỏi trước khi mở link tải Setup; nếu không có update thì chỉ báo điều đó ở lần kiểm tra thủ công; lỗi mạng không chặn app | — |
 
 ## 5. Parser và nhập URL
 

@@ -35,6 +35,7 @@ from PyQt6.QtGui import (
     QIntValidator,
     QTextCursor,
 )
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 # pyrefly: ignore [missing-import]
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -78,6 +79,12 @@ from core.dub_worker import DubWorker
 from core.license_manager import LicenseManager
 from core.parser import extract_urls, read_urls_from_file
 from core.security import get_resource_path
+from core.update_checker import (
+    GITHUB_RELEASE_API_URL,
+    ReleaseUpdate,
+    find_release_update,
+)
+from core.version import APP_VERSION
 from core.worker import DownloadWorker, ScanChannelWorker
 from ui.activation_dialog import ActivationDialog
 from ui.cookie_dialog import CookieFailedDialog, CookieGuideDialog, CookiePromptDialog
@@ -569,6 +576,9 @@ class MainWindow(QMainWindow):
         self._saved_window_h: int = 760
         self._saved_is_maximized: bool = False
         self._first_show_done: bool = False
+        self._update_manager = QNetworkAccessManager(self)
+        self._update_reply: Optional[QNetworkReply] = None
+        self._manual_update_check = False
 
         # Nạp cài đặt đã lưu từ phiên trước
         self._load_settings()
@@ -590,8 +600,9 @@ class MainWindow(QMainWindow):
         self._restore_active_page()
         self._append_log(
             "HỆ THỐNG",
-            "OmniGrab v4.0 sẵn sàng. Dán link vào ô nhập hoặc vào Chế độ tải → Quét kênh.",
+            f"OmniGrab v{APP_VERSION} sẵn sàng. Dán link vào ô nhập hoặc vào Chế độ tải → Quét kênh.",
         )
+        QTimer.singleShot(2500, self._check_for_updates_automatically)
 
     # ══════════════════════════════════════════════════════════════════
     # CẤU HÌNH NGƯỜI DÙNG (PERSISTENCE)
@@ -1027,6 +1038,10 @@ class MainWindow(QMainWindow):
         menu_help.addAction(act_activate)
 
         menu_help.addSeparator()
+
+        act_check_updates = QAction("Kiểm tra cập nhật...", self)
+        act_check_updates.triggered.connect(self._check_for_updates_manually)
+        menu_help.addAction(act_check_updates)
 
         act_about = QAction("Thông tin phần mềm (About)", self)
         act_about.triggered.connect(self._on_about)
@@ -2131,6 +2146,99 @@ class MainWindow(QMainWindow):
     # XỬ LÝ SỰ KIỆN — MENU TRỢ GIÚP
     # ══════════════════════════════════════════════════════════════════
 
+    def _check_for_updates_automatically(self) -> None:
+        self._start_update_check(manual=False)
+
+    def _check_for_updates_manually(self) -> None:
+        self._start_update_check(manual=True)
+
+    def _start_update_check(self, manual: bool) -> None:
+        if self._update_reply is not None:
+            if manual:
+                self._manual_update_check = True
+            return
+
+        request = QNetworkRequest(QUrl(GITHUB_RELEASE_API_URL))
+        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        request.setRawHeader(b"X-GitHub-Api-Version", b"2022-11-28")
+        request.setRawHeader(b"User-Agent", b"OmniGrab-Updater")
+        request.setTransferTimeout(10_000)
+        request.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
+        )
+        self._manual_update_check = manual
+        self._update_reply = self._update_manager.get(request)
+        self._update_reply.finished.connect(
+            lambda reply=self._update_reply: self._on_update_check_finished(reply)
+        )
+
+    def _on_update_check_finished(self, reply: QNetworkReply) -> None:
+        if reply is not self._update_reply:
+            reply.deleteLater()
+            return
+
+        self._update_reply = None
+        manual = self._manual_update_check
+        self._manual_update_check = False
+        try:
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                if manual:
+                    QMessageBox.warning(
+                        self,
+                        "Không thể kiểm tra cập nhật",
+                        f"Không kết nối được với GitHub:\n{reply.errorString()}",
+                    )
+                return
+
+            payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
+            update = find_release_update(payload, APP_VERSION)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            if manual:
+                QMessageBox.warning(
+                    self,
+                    "Không thể kiểm tra cập nhật",
+                    f"Không đọc được thông tin phát hành:\n{exc}",
+                )
+            return
+        finally:
+            reply.deleteLater()
+
+        if update is None:
+            if manual:
+                QMessageBox.information(
+                    self,
+                    "Kiểm tra cập nhật",
+                    f"Bạn đang dùng phiên bản mới nhất (v{APP_VERSION}).",
+                )
+            return
+
+        self._show_available_update(update)
+
+    def _show_available_update(self, update: ReleaseUpdate) -> None:
+        message = (
+            f"Đang dùng: v{APP_VERSION}\n"
+            f"Phiên bản mới: v{update.version}\n\n"
+            "Bạn có muốn tải bộ cài đặt mới từ GitHub không?"
+        )
+        if update.notes:
+            message += f"\n\nThông tin phát hành:\n{update.notes}"
+
+        choice = QMessageBox.question(
+            self,
+            "Có phiên bản OmniGrab mới",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice == QMessageBox.StandardButton.Yes:
+            if not QDesktopServices.openUrl(QUrl(update.download_url)):
+                QMessageBox.warning(
+                    self,
+                    "Không thể mở liên kết",
+                    f"Không mở được trang tải bộ cài đặt:\n{update.release_url}",
+                )
+
     def _on_about(self) -> None:
         dlg = QDialog(self)
         dlg.setWindowTitle("Thông tin OmniGrab")
@@ -2171,7 +2279,7 @@ class MainWindow(QMainWindow):
         title_row = QHBoxLayout()
         name = QLabel("OmniGrab Pro")
         name.setObjectName("appName")
-        version = QLabel("v4.0.0")
+        version = QLabel(f"v{APP_VERSION}")
         version.setObjectName("versionBadge")
         title_row.addWidget(name)
         title_row.addWidget(version, 0, Qt.AlignmentFlag.AlignVCenter)

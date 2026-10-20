@@ -44,6 +44,36 @@ WHISPER_RUNTIME = RUNTIME_DIR / "models" / "faster-whisper-base"
 VERSION = APP_VERSION
 
 
+def ensure_venv() -> None:
+    """Tự động chuyển tiếp sang môi trường ảo (venv) nếu người dùng chạy bằng Python hệ thống."""
+    venv_python = ROOT_DIR / "venv" / "Scripts" / "python.exe"
+    if venv_python.is_file():
+        try:
+            current_py = Path(sys.executable).resolve()
+            if current_py != venv_python.resolve():
+                print(f"[INFO] Phát hiện đang chạy Python ngoài venv: {current_py}", flush=True)
+                print(f"[INFO] Tự động chuyển tiếp thực thi sang: {venv_python}...", flush=True)
+                res = subprocess.run([str(venv_python)] + sys.argv, cwd=str(ROOT_DIR))
+                sys.exit(res.returncode)
+        except Exception as e:
+            print(f"[WARN] Không thể tự chuyển venv: {e}", flush=True)
+
+
+def kill_conflicting_processes() -> None:
+    """Tắt các tiến trình OmniGrab hoặc ffmpeg đang chạy ngầm làm khóa file trong thư mục dist."""
+    if sys.platform == "win32":
+        for proc in ["OmniGrab.exe", "ffmpeg.exe", "ffprobe.exe"]:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", proc],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except Exception:
+                pass
+
+
 def log(msg: str, level: str = "INFO") -> None:
     prefixes = {
         "INFO": "[INFO] ",
@@ -51,7 +81,7 @@ def log(msg: str, level: str = "INFO") -> None:
         "WARN": "[WARN] ",
         "ERROR": "[LOI]  ",
     }
-    print(f"{prefixes.get(level, '[INFO] ')}{msg}")
+    print(f"{prefixes.get(level, '[INFO] ')}{msg}", flush=True)
 
 
 def check_prerequisites() -> tuple[Path, Path]:
@@ -136,7 +166,8 @@ def prepare_runtime() -> None:
 
 
 def clean_previous_builds() -> None:
-    log("Dọn dẹp thư mục build cũ...")
+    log("Dọn dẹp thư mục build cũ và tắt các tiến trình liên quan...")
+    kill_conflicting_processes()
     for p in [BUILD_DIR, ROOT_DIR / "dist", ROOT_DIR / "dist_release", ROOT_DIR / "build_release_pyinstaller"]:
         if p.exists():
             try:
@@ -144,6 +175,16 @@ def clean_previous_builds() -> None:
             except Exception as e:
                 log(f"Không thể xóa hoàn toàn {p}: {e}", "WARN")
     OUT_INSTALLER_DIR.mkdir(parents=True, exist_ok=True)
+    # Dọn dẹp các artifact cũ của phiên bản hiện tại để tránh file lock hoặc ghi đè lỗi
+    for old_target in [
+        OUT_INSTALLER_DIR / f"OmniGrab.Setup.{VERSION}.exe",
+        OUT_INSTALLER_DIR / f"OmniGrab_v{VERSION}_Portable.zip",
+    ]:
+        if old_target.is_file():
+            try:
+                old_target.unlink()
+            except Exception:
+                pass
     log("Đã dọn dẹp xong.", "SUCCESS")
 
 
@@ -246,16 +287,20 @@ def build_installer() -> None:
         return
 
     log("Đang biên dịch Bộ cài đặt chuyên nghiệp (Inno Setup)...")
-    cmd = [str(iscc_path), f"/DAppDistDir={DIST_DIR.parent}", str(iss_file)]
+    cmd = [
+        str(iscc_path),
+        f"/DAppDistDir={DIST_DIR.parent}",
+        f"/DMyAppVersion={VERSION}",
+        str(iss_file),
+    ]
     res = subprocess.run(cmd, cwd=str(ROOT_DIR))
     if res.returncode == 0:
-        installer_candidates = list(OUT_INSTALLER_DIR.glob("*.exe"))
-        if installer_candidates:
-            for inst in installer_candidates:
-                mb_size = inst.stat().st_size / (1024 * 1024)
-                log(f"Tạo bộ cài đặt thành công: {inst.name} ({mb_size:.1f} MB)", "SUCCESS")
+        inst_target = OUT_INSTALLER_DIR / f"OmniGrab.Setup.{VERSION}.exe"
+        if inst_target.is_file():
+            mb_size = inst_target.stat().st_size / (1024 * 1024)
+            log(f"Tạo bộ cài đặt thành công: {inst_target.name} ({mb_size:.1f} MB)", "SUCCESS")
         else:
-            log("Không tìm thấy file installer sau khi Inno Setup biên dịch!", "WARN")
+            log(f"Đã biên dịch xong nhưng không tìm thấy {inst_target.name}!", "WARN")
     else:
         log("Biên dịch bộ cài đặt Inno Setup gặp lỗi!", "WARN")
 
@@ -278,6 +323,8 @@ def build_portable_zip() -> None:
 
 
 def main() -> None:
+    ensure_venv()
+
     print("=" * 64)
     print(f"      OmniGrab v{VERSION} - HỆ THỐNG ĐÓNG GÓI TỰ ĐỘNG CHUYÊN NGHIỆP")
     print("=" * 64)

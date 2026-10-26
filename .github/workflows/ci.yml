@@ -1,0 +1,131 @@
+name: CI - Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+      - develop
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  code-quality:
+    name: Code Quality & Syntax Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install Linting Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff flake8
+
+      - name: Bytecode Compilation Check (compileall)
+        run: |
+          python -m compileall -q -f main.py core ui
+
+      - name: Static Analysis with Ruff
+        run: |
+          # Kiểm tra lỗi nghiêm trọng (syntax errors, undefined names, import cycles)
+          ruff check . --select=E9,F63,F7,F82
+
+      - name: Flake8 Syntax Error Gate
+        run: |
+          # Dừng build nếu có syntax errors hoặc undefined variables
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  unit-tests:
+    name: Unit Tests (Windows Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    needs: code-quality
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install Project Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-cov
+
+      - name: Run Pytest Test Suite
+        run: |
+          python -m pytest tests -v --junitxml=reports/junit-${{ matrix.python-version }}.xml
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-python-${{ matrix.python-version }}
+          path: reports/junit-*.xml
+          retention-days: 14
+
+  spec-dryrun:
+    name: PyInstaller Spec Validation
+    runs-on: windows-latest
+    needs: code-quality
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Packaging Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller -r requirements.txt
+
+      - name: Validate OmniGrab.spec and Packaging Scripts
+        run: |
+          python -c "
+          import ast
+          with open('OmniGrab.spec', 'r', encoding='utf-8') as f:
+              ast.parse(f.read())
+          print('OmniGrab.spec syntax is valid!')
+          "
+          python -c "
+          import ast
+          with open('build_release.py', 'r', encoding='utf-8') as f:
+              ast.parse(f.read())
+          print('build_release.py syntax is valid!')
+          "

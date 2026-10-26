@@ -104,16 +104,26 @@ def check_prerequisites() -> tuple[Path, Path]:
         if alt.is_file():
             ffmpeg_path = alt
         else:
-            log("Không tìm thấy ffmpeg.exe trong thư mục gốc hoặc tools/ffmpeg/bin!", "ERROR")
-            sys.exit(1)
+            sys_ff = shutil.which("ffmpeg")
+            if sys_ff and Path(sys_ff).is_file():
+                ffmpeg_path = Path(sys_ff)
+                log(f"Đã tìm thấy FFmpeg từ PATH hệ thống: {ffmpeg_path}", "INFO")
+            else:
+                log("Không tìm thấy ffmpeg.exe trong thư mục gốc, tools/ffmpeg/bin, hoặc PATH hệ thống!", "ERROR")
+                sys.exit(1)
 
     if not ffprobe_path.is_file():
         alt = ROOT_DIR / "tools" / "ffmpeg" / "bin" / "ffprobe.exe"
         if alt.is_file():
             ffprobe_path = alt
         else:
-            log("Không tìm thấy ffprobe.exe trong thư mục gốc hoặc tools/ffmpeg/bin!", "ERROR")
-            sys.exit(1)
+            sys_probe = shutil.which("ffprobe")
+            if sys_probe and Path(sys_probe).is_file():
+                ffprobe_path = Path(sys_probe)
+                log(f"Đã tìm thấy FFprobe từ PATH hệ thống: {ffprobe_path}", "INFO")
+            else:
+                log("Không tìm thấy ffprobe.exe trong thư mục gốc, tools/ffmpeg/bin, hoặc PATH hệ thống!", "ERROR")
+                sys.exit(1)
 
     log(f"Đã xác nhận FFmpeg: {ffmpeg_path}", "SUCCESS")
     log(f"Đã xác nhận FFprobe: {ffprobe_path}", "SUCCESS")
@@ -188,6 +198,73 @@ def clean_previous_builds() -> None:
     log("Đã dọn dẹp xong.", "SUCCESS")
 
 
+def run_nuitka() -> None:
+    log("Bắt đầu biên dịch toàn diện sang mã máy C++ bằng Nuitka (Bảo vệ bản quyền & Chống dịch ngược)...")
+    cmd = [
+        sys.executable,
+        "-m",
+        "nuitka",
+        "--standalone",
+        "--assume-yes-for-downloads",
+        "--enable-plugin=pyqt6",
+        "--enable-plugin=playwright",
+        "--include-package=yt_dlp",
+        "--include-package=curl_cffi",
+        "--include-package=f2",
+        "--include-package=faster_whisper",
+        "--include-package=ctranslate2",
+        "--include-package=playwright",
+        "--include-package=pydub",
+        "--include-package=gtts",
+        "--include-package=deep_translator",
+        "--include-package=cryptography",
+        "--include-package=bs4",
+        "--include-package=requests",
+        "--include-package=av",
+        "--include-package=onnxruntime",
+        "--include-package-data=f2",
+        "--include-package-data=curl_cffi",
+        f"--windows-icon-from-ico={ROOT_DIR / 'assets' / 'icon.ico'}",
+        f"--include-data-dir={ROOT_DIR / 'assets'}=assets",
+        f"--include-data-dir={ROOT_DIR / 'ui'}=ui",
+        f"--include-data-dir={ROOT_DIR / 'core'}=core",
+        "--windows-company-name=OmniGrab",
+        "--windows-product-name=OmniGrab",
+        f"--windows-file-version={VERSION}.0",
+        f"--windows-product-version={VERSION}.0",
+        "--windows-file-description=OmniGrab Video Downloader & AI Dubbing",
+        f"--output-dir={ROOT_DIR / 'dist'}",
+        "--output-filename=OmniGrab.exe",
+        "--windows-disable-console",
+        "--remove-output",
+        "--lto=no",
+        "main.py",
+    ]
+    log(f"Thực thi lệnh: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=str(ROOT_DIR))
+    if result.returncode != 0:
+        log("Biên dịch Nuitka C++ thất bại! Vui lòng kiểm tra log lỗi bên trên.", "ERROR")
+        sys.exit(result.returncode)
+
+    # Nuitka --standalone thường sinh thư mục dist/main.dist hoặc dist/OmniGrab.dist
+    for candidate in [ROOT_DIR / "dist" / "main.dist", ROOT_DIR / "dist" / "OmniGrab.dist"]:
+        if candidate.is_dir():
+            if DIST_DIR.exists():
+                shutil.rmtree(DIST_DIR, ignore_errors=True)
+            candidate.rename(DIST_DIR)
+            log(f"Đã chuẩn hóa thư mục build Nuitka -> {DIST_DIR}", "SUCCESS")
+            break
+
+    # Đảm bảo file thực thi có tên OmniGrab.exe trong DIST_DIR
+    if DIST_DIR.is_dir():
+        main_exe = DIST_DIR / "main.exe"
+        omnigrab_exe = DIST_DIR / "OmniGrab.exe"
+        if main_exe.is_file() and not omnigrab_exe.is_file():
+            main_exe.rename(omnigrab_exe)
+
+    log("Biên dịch Nuitka C++ hoàn tất thành công!", "SUCCESS")
+
+
 def run_pyinstaller() -> None:
     log("Bắt đầu đóng gói bằng PyInstaller (sử dụng OmniGrab.spec)...")
     cmd = [
@@ -245,7 +322,20 @@ def verify_and_copy_binaries(ffmpeg_src: Path, ffprobe_src: Path) -> None:
         if src_ico.is_file() and not dest_ico.is_file():
             shutil.copy2(src_ico, dest_ico)
 
-    # 4. Làm mới bộ nhớ đệm icon của Windows
+    # 4. Sao chép runtime Playwright Chromium & Whisper model vào DIST_DIR nếu chưa có
+    if PLAYWRIGHT_RUNTIME.is_dir():
+        target_pw = DIST_DIR / "playwright-browsers"
+        if not target_pw.exists():
+            log(f"Sao chép runtime Playwright vào {target_pw}...", "INFO")
+            shutil.copytree(PLAYWRIGHT_RUNTIME, target_pw, dirs_exist_ok=True)
+
+    if WHISPER_RUNTIME.is_dir():
+        target_wh = DIST_DIR / "models" / "faster-whisper-base"
+        if not target_wh.exists():
+            log(f"Sao chép runtime Whisper model vào {target_wh}...", "INFO")
+            shutil.copytree(WHISPER_RUNTIME, target_wh, dirs_exist_ok=True)
+
+    # 5. Làm mới bộ nhớ đệm icon của Windows
     try:
         subprocess.run(["ie4uinit.exe", "-show"], check=False)
     except Exception:
@@ -325,14 +415,26 @@ def build_portable_zip() -> None:
 def main() -> None:
     ensure_venv()
 
+    # Nhận diện engine đóng gói: Nuitka C++ (mặc định) hoặc PyInstaller
+    engine = "nuitka"
+    if "--pyinstaller" in sys.argv or os.environ.get("BUILD_ENGINE", "").lower() == "pyinstaller":
+        engine = "pyinstaller"
+    elif "--nuitka" in sys.argv or os.environ.get("BUILD_ENGINE", "").lower() == "nuitka":
+        engine = "nuitka"
+
     print("=" * 64)
-    print(f"      OmniGrab v{VERSION} - HỆ THỐNG ĐÓNG GÓI TỰ ĐỘNG CHUYÊN NGHIỆP")
+    print(f"      OmniGrab v{VERSION} - HỆ THỐNG ĐÓNG GÓI [{engine.upper()}]")
     print("=" * 64)
 
     ffmpeg_src, ffprobe_src = check_prerequisites()
     prepare_runtime()
     clean_previous_builds()
-    run_pyinstaller()
+
+    if engine == "pyinstaller":
+        run_pyinstaller()
+    else:
+        run_nuitka()
+
     verify_and_copy_binaries(ffmpeg_src, ffprobe_src)
     build_portable_zip()
     build_installer()

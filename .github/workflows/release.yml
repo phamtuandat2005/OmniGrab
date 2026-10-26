@@ -1,0 +1,172 @@
+name: CD - Automated Release & Packaging
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: 'Công cụ đóng gói (nuitka = C++ bảo mật cao, pyinstaller = tiêu chuẩn)'
+        type: choice
+        options:
+          - nuitka
+          - pyinstaller
+        default: nuitka
+      draft:
+        description: 'Tạo bản phát hành nháp (Draft release)'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Đánh dấu là bản phát hành thử nghiệm (Pre-release)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cd-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build Windows C++ Binary & Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11 (x64)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+          cache: 'pip'
+
+      - name: Cache Build Runtime Assets (Playwright & Whisper Models)
+        uses: actions/cache@v4
+        with:
+          path: build_runtime
+          key: ${{ runner.os }}-runtime-assets-v1
+
+      - name: Cache Nuitka Compilation Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\Nuitka\Nuitka\Cache
+          key: ${{ runner.os }}-nuitka-cache-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-nuitka-cache-
+
+      - name: Install System Packaging Tools (Inno Setup & FFmpeg)
+        shell: powershell
+        run: |
+          Write-Host "=== Cài đặt Inno Setup và FFmpeg qua Chocolatey ==="
+          choco install innosetup -y
+          choco install ffmpeg -y
+          
+          # Đưa Inno Setup vào PATH môi trường
+          $innoDir = "C:\Program Files (x86)\Inno Setup 6"
+          if (Test-Path $innoDir) {
+              Add-Content $env:GITHUB_PATH "$innoDir"
+              Write-Host "Đã thêm Inno Setup vào PATH: $innoDir"
+          }
+
+          # Đồng bộ FFmpeg và FFprobe vào thư mục gốc repository
+          $ffmpegPath = (Get-Command ffmpeg).Source
+          $ffprobePath = (Get-Command ffprobe).Source
+          Copy-Item $ffmpegPath -Destination .\ffmpeg.exe -Force
+          Copy-Item $ffprobePath -Destination .\ffprobe.exe -Force
+          Write-Host "Đã chuẩn bị FFmpeg: .\ffmpeg.exe"
+          Write-Host "Đã chuẩn bị FFprobe: .\ffprobe.exe"
+
+      - name: Install Python Dependencies & Nuitka C++ Compiler
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt nuitka zstandard pyinstaller
+
+      - name: Prepare Playwright Browsers
+        shell: powershell
+        run: |
+          python -m playwright install chromium
+
+      - name: Execute Build Release Pipeline (Nuitka C++)
+        shell: powershell
+        env:
+          BUILD_ENGINE: ${{ github.event.inputs.engine || 'nuitka' }}
+        run: |
+          Write-Host "=== Bắt đầu đóng gói OmniGrab bằng công nghệ $env:BUILD_ENGINE ==="
+          python build_release.py --$env:BUILD_ENGINE
+
+      - name: Verify Release Artifacts
+        shell: powershell
+        run: |
+          Write-Host "=== Kiểm tra tính toàn vẹn các file đầu ra ==="
+          $installer = Get-ChildItem -Path dist_installer -Filter "OmniGrab.Setup.*.exe"
+          $portable  = Get-ChildItem -Path dist_installer -Filter "OmniGrab_*_Portable.zip"
+          
+          if (-not $installer) {
+              Write-Error "Không tìm thấy bộ cài đặt OmniGrab.Setup.*.exe trong dist_installer!"
+              exit 1
+          }
+          if (-not $portable) {
+              Write-Error "Không tìm thấy file nén OmniGrab_*_Portable.zip trong dist_installer!"
+              exit 1
+          }
+          Write-Host "Installer : $($installer.FullName) ($([math]::Round($installer.Length / 1MB, 2)) MB)"
+          Write-Host "Portable  : $($portable.FullName) ($([math]::Round($portable.Length / 1MB, 2)) MB)"
+
+      - name: Generate SHA-256 Checksums
+        shell: powershell
+        run: |
+          Write-Host "=== Tính mã băm bảo mật SHA256 ==="
+          Set-Location dist_installer
+          $checksumLines = @()
+          Get-ChildItem -File -Include "*.exe", "*.zip" | ForEach-Object {
+              $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash
+              $line = "$hash  $($_.Name)"
+              $checksumLines += $line
+              Write-Host $line
+          }
+          $checksumLines | Out-File -FilePath SHA256SUMS.txt -Encoding utf8
+          Set-Location ..
+
+      - name: Upload Workflow Artifacts (Internal Storage)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmniGrab-Dist-Installer
+          path: dist_installer/*
+          retention-days: 30
+
+      - name: Extract Tag or Release Title
+        id: release_info
+        shell: powershell
+        run: |
+          $appVer = python -c "from core.version import APP_VERSION; print(APP_VERSION)"
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+              $tagName = $env:GITHUB_REF -replace "refs/tags/", ""
+          } else {
+              $tagName = "v$appVer"
+          }
+          echo "tag_name=$tagName" >> $env:GITHUB_OUTPUT
+          echo "app_version=$appVer" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          name: OmniGrab ${{ steps.release_info.outputs.tag_name }} - Official Release (Nuitka C++)
+          draft: ${{ github.event.inputs.draft || false }}
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          generate_release_notes: true
+          files: |
+            dist_installer/OmniGrab.Setup.*.exe
+            dist_installer/OmniGrab_*_Portable.zip
+            dist_installer/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

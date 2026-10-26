@@ -22,6 +22,7 @@ if (ROOT_DIR / "ffprobe.exe").is_file():
 
 hiddenimports = [
     'PyQt6', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets',
+    'PyQt6.QtMultimedia', 'PyQt6.QtMultimediaWidgets', 'PyQt6.QtSvg', 'PyQt6.sip',
     'yt_dlp', 'audioop', 'audioop_lts', 'requests',
     'win32com', 'win32com.client', 'win32com.propsys'
 ]

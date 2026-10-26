@@ -59,7 +59,9 @@ from PyQt6.QtWidgets import (
 )
 
 from core.dubber import DubSegment, OmniDubber, merge_broken_segments, translate_film_context
-from ui.styles import COLORS
+from ui.styles import COLORS, btn_primary_style, btn_secondary_style
+from ui.icons import get_svg_icon, get_svg_pixmap
+from ui.widgets import TableEmptyState
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -580,7 +582,7 @@ class AudioMixDialog(QDialog):
         row_voice.addWidget(self._lbl_voice_val)
         c_layout.addLayout(row_voice)
 
-        lbl_voice_hint = QLabel("💡 Khuyến nghị 220% (kèm lọc loudnorm EBU R128 để giọng to rõ, ấm áp)")
+        lbl_voice_hint = QLabel("Khuyến nghị 220% (kèm lọc loudnorm EBU R128 để giọng to rõ, tự nhiên)")
         lbl_voice_hint.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px; padding-left: 150px;")
         c_layout.addWidget(lbl_voice_hint)
 
@@ -629,7 +631,7 @@ class AudioMixDialog(QDialog):
         if self.mute_original:
             self._slider_bg.setEnabled(False)
 
-        lbl_bg_hint = QLabel("💡 Khuyến nghị 10% để tiếng gốc/nhạc nền làm âm thanh nền êm dịu")
+        lbl_bg_hint = QLabel("Khuyến nghị 10% để tiếng gốc/nhạc nền làm âm thanh nền êm dịu")
         lbl_bg_hint.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px; padding-left: 150px;")
         c_layout.addWidget(lbl_bg_hint)
 
@@ -637,58 +639,21 @@ class AudioMixDialog(QDialog):
 
         # Buttons
         btn_layout = QHBoxLayout()
-        btn_default = QPushButton("🔄 Mặc định (220% / 10%)")
-        btn_default.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['bg_card']};
-                color: {c['text_secondary']};
-                border: 1px solid {c['border']};
-                border-radius: 5px;
-                padding: 6px 12px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{
-                background-color: {c['bg_secondary']};
-                color: {c['text_primary']};
-            }}
-        """)
+        btn_default = QPushButton("Mặc định (220% / 10%)")
+        btn_default.setIcon(get_svg_icon("refresh", c["text_secondary"]))
+        btn_default.setStyleSheet(btn_secondary_style())
         btn_default.clicked.connect(self._reset_defaults)
         btn_layout.addWidget(btn_default)
         btn_layout.addStretch(1)
 
         btn_cancel = QPushButton("Hủy")
-        btn_cancel.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['bg_card']};
-                color: {c['text_secondary']};
-                border: 1px solid {c['border']};
-                border-radius: 5px;
-                padding: 6px 14px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{
-                background-color: {c['bg_secondary']};
-                color: {c['text_primary']};
-            }}
-        """)
+        btn_cancel.setStyleSheet(btn_secondary_style())
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
-        btn_save = QPushButton("✓ Áp dụng")
-        btn_save.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['accent_blue']};
-                color: #ffffff;
-                font-weight: 700;
-                border: none;
-                border-radius: 5px;
-                padding: 6px 18px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{
-                background-color: #2563eb;
-            }}
-        """)
+        btn_save = QPushButton("Áp dụng")
+        btn_save.setIcon(get_svg_icon("check", "#ffffff"))
+        btn_save.setStyleSheet(btn_primary_style())
         btn_save.clicked.connect(self._on_save)
         btn_layout.addWidget(btn_save)
 
@@ -799,10 +764,18 @@ class DubbingStudioWidget(QWidget):
         self._lbl_video_title.setStyleSheet(f"color: {c['text_secondary']}; font-size: 12px;")
         h_layout.addWidget(self._lbl_video_title, 1)
 
-        btn_open = QPushButton("📂  Mở video khác...")
+        btn_open = QPushButton("Mở video khác...")
+        btn_open.setIcon(get_svg_icon("folder", c["text_secondary"]))
         btn_open.setStyleSheet(self._btn_secondary_style())
         btn_open.clicked.connect(self._on_choose_video)
         h_layout.addWidget(btn_open)
+
+        btn_gallery = QPushButton("Xem video đã tải")
+        btn_gallery.setIcon(get_svg_icon("film", c["text_secondary"]))
+        btn_gallery.setStyleSheet(self._btn_secondary_style())
+        btn_gallery.setToolTip("Mở thư viện xem video đã tải xuống (Ctrl+4)")
+        btn_gallery.clicked.connect(self._on_open_gallery)
+        h_layout.addWidget(btn_gallery)
 
         self._btn_ai_extract: Optional[QPushButton] = None
 
@@ -836,26 +809,33 @@ class DubbingStudioWidget(QWidget):
         controls_layout.setContentsMargins(4, 0, 4, 0)
         controls_layout.setSpacing(8)
 
-        self._btn_play = QPushButton("▶  Phát")
+        self._btn_play = QPushButton("Phát")
+        self._btn_play.setIcon(get_svg_icon("play", c["text_primary"]))
         self._btn_play.setFixedWidth(85)
         self._btn_play.setStyleSheet(self._btn_secondary_style())
         self._btn_play.clicked.connect(self._toggle_play)
         controls_layout.addWidget(self._btn_play)
 
-        self._btn_stop = QPushButton("⏹")
+        self._btn_stop = QPushButton()
+        self._btn_stop.setIcon(get_svg_icon("stop", COLORS["danger"]))
+        self._btn_stop.setToolTip("Dừng phát video")
         self._btn_stop.setFixedWidth(36)
         self._btn_stop.setStyleSheet(self._btn_secondary_style())
         self._btn_stop.clicked.connect(self._stop_video)
         controls_layout.addWidget(self._btn_stop)
 
-        btn_back5 = QPushButton("⏪ -5s")
-        btn_back5.setFixedWidth(55)
+        btn_back5 = QPushButton("5s")
+        btn_back5.setIcon(get_svg_icon("rewind-5", c["text_secondary"]))
+        btn_back5.setToolTip("Tua lại 5 giây")
+        btn_back5.setFixedWidth(60)
         btn_back5.setStyleSheet(self._btn_secondary_style())
         btn_back5.clicked.connect(lambda: self._seek_relative(-5000))
         controls_layout.addWidget(btn_back5)
 
-        btn_fwd5 = QPushButton("+5s ⏩")
-        btn_fwd5.setFixedWidth(55)
+        btn_fwd5 = QPushButton("5s")
+        btn_fwd5.setIcon(get_svg_icon("forward-5", c["text_secondary"]))
+        btn_fwd5.setToolTip("Tua tới 5 giây")
+        btn_fwd5.setFixedWidth(60)
         btn_fwd5.setStyleSheet(self._btn_secondary_style())
         btn_fwd5.clicked.connect(lambda: self._seek_relative(5000))
         controls_layout.addWidget(btn_fwd5)
@@ -897,8 +877,8 @@ class DubbingStudioWidget(QWidget):
         controls_layout.addWidget(self._lbl_time)
 
         # Âm lượng
-        vol_icon = QLabel("🔊")
-        vol_icon.setStyleSheet("font-size: 12px;")
+        vol_icon = QLabel()
+        vol_icon.setPixmap(get_svg_pixmap("volume", size=16, color=c["text_secondary"]))
         controls_layout.addWidget(vol_icon)
 
         self._vol_slider = QSlider(Qt.Orientation.Horizontal)
@@ -925,8 +905,8 @@ class DubbingStudioWidget(QWidget):
         t_layout.setSpacing(6)
 
         # Thanh hướng dẫn nhỏ trên bảng
-        table_hint = QLabel("💡 Mẹo: Nhấn nút '🎙️ BẮT ĐẦU LỒNG TIẾNG' ở góc dưới bên phải để AI tự động bóc tách, dịch thoại lên bảng và xuất video lồng tiếng cùng lúc. Nhấp đúp vào dòng để tua video.")
-        table_hint.setStyleSheet(f"color: {c['accent_cyan']}; font-size: 11px; padding: 2px 4px;")
+        table_hint = QLabel("Mẹo: Nhấn nút 'Bắt đầu lồng tiếng' ở thanh bên phải để AI tự động nhận diện và dịch thoại. Nhấp đúp vào dòng để tua video.")
+        table_hint.setStyleSheet(f"color: {c['text_muted']}; font-size: 11px; padding: 2px 4px;")
         t_layout.addWidget(table_hint)
 
         # Bảng kịch bản 4 cột
@@ -967,11 +947,22 @@ class DubbingStudioWidget(QWidget):
         self.table.setAlternatingRowColors(True)
 
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(self.COL_TIME, QHeaderView.ResizeMode.ResizeToContents)
+        header.setMinimumSectionSize(70)
+        header.setSectionResizeMode(self.COL_TIME, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_ORIG, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_TRANS, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(self.COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setColumnWidth(self.COL_ORIG, 160)
+        header.setSectionResizeMode(self.COL_STATUS, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(self.COL_TIME, 110)
+        self.table.setColumnWidth(self.COL_ORIG, 200)
+        self.table.setColumnWidth(self.COL_STATUS, 110)
+
+        # Empty state cho bảng
+        self._empty_state = TableEmptyState(
+            self.table,
+            title="Chưa có kịch bản đối chiếu",
+            subtitle="Mở video và nhấn 'Bắt đầu lồng tiếng' để AI bóc tách & dịch thoại",
+            icon_name="file-text",
+        )
 
         # Nhấp đúp dòng để tua video
         self.table.cellDoubleClicked.connect(self._on_table_double_clicked)
@@ -1001,12 +992,12 @@ class DubbingStudioWidget(QWidget):
         c_layout.setContentsMargins(6, 4, 6, 4)
         c_layout.setSpacing(8)
 
-        lbl_caption = QLabel("🎵 Caption TikTok:")
-        lbl_caption.setStyleSheet(f"color: {c['platform_tiktok']}; font-weight: 600; font-size: 12px;")
+        lbl_caption = QLabel("Caption TikTok:")
+        lbl_caption.setStyleSheet(f"color: {c['text_secondary']}; font-weight: 600; font-size: 12px;")
         c_layout.addWidget(lbl_caption)
 
         self._txt_tiktok_caption = QLineEdit()
-        self._txt_tiktok_caption.setPlaceholderText("Nhập hoặc bấm '✨ Tạo Caption AI' để tự động tạo Caption giật tít + Hashtag...")
+        self._txt_tiktok_caption.setPlaceholderText("Nhập tiêu đề video hoặc bấm 'Tạo Caption AI'...")
         self._txt_tiktok_caption.setStyleSheet(f"""
             QLineEdit {{
                 background-color: {c['bg_input']};
@@ -1022,8 +1013,9 @@ class DubbingStudioWidget(QWidget):
         """)
         c_layout.addWidget(self._txt_tiktok_caption, 1)
 
-        btn_ai_caption = QPushButton("✨ Tạo Caption AI")
-        btn_ai_caption.setToolTip("Dùng Gemini AI phân tích kịch bản trên bảng để tạo 1 câu Caption giật tít kèm Hashtag thịnh hành")
+        btn_ai_caption = QPushButton("Tạo Caption AI")
+        btn_ai_caption.setIcon(get_svg_icon("sparkles", COLORS["brand"]))
+        btn_ai_caption.setToolTip("Dùng AI phân tích kịch bản trên bảng để tạo câu Caption giật tít kèm Hashtag")
         btn_ai_caption.setStyleSheet(self._btn_secondary_style())
         btn_ai_caption.clicked.connect(self._on_generate_ai_caption)
         c_layout.addWidget(btn_ai_caption)
@@ -1035,47 +1027,23 @@ class DubbingStudioWidget(QWidget):
         footer_layout.setContentsMargins(0, 4, 0, 0)
         footer_layout.setSpacing(10)
 
-        btn_back = QPushButton("Quay lại màn hình tải")
+        btn_back = QPushButton("Quay lại")
+        btn_back.setIcon(get_svg_icon("arrow-left", c["text_secondary"]))
         btn_back.setStyleSheet(self._btn_secondary_style())
         btn_back.clicked.connect(self._on_back_clicked)
         footer_layout.addWidget(btn_back)
 
         footer_layout.addStretch(1)
-       
 
-        self._btn_upload_tiktok = QPushButton(" ĐĂNG TIKTOK")
-        self._btn_upload_tiktok.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['platform_tiktok']};
-                color: #ffffff;
-                font-weight: bold;
-                font-size: 13px;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 18px;
-            }}
-            QPushButton:hover {{
-                opacity: 0.9;
-            }}
-        """)
+        self._btn_upload_tiktok = QPushButton("Đăng TikTok")
+        self._btn_upload_tiktok.setIcon(get_svg_icon("tiktok", c["text_primary"]))
+        self._btn_upload_tiktok.setStyleSheet(self._btn_secondary_style())
         self._btn_upload_tiktok.clicked.connect(self._on_upload_now_tiktok)
         footer_layout.addWidget(self._btn_upload_tiktok)
 
-        self._btn_upload_youtube = QPushButton("▶  ĐĂNG YOUTUBE")
-        self._btn_upload_youtube.setStyleSheet("""
-            QPushButton {
-                background-color: #ff0000;
-                color: #ffffff;
-                font-weight: bold;
-                font-size: 13px;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 18px;
-            }
-            QPushButton:hover {
-                background-color: #cc0000;
-            }
-        """)
+        self._btn_upload_youtube = QPushButton("Đăng YouTube")
+        self._btn_upload_youtube.setIcon(get_svg_icon("youtube", COLORS["danger"]))
+        self._btn_upload_youtube.setStyleSheet(self._btn_secondary_style())
         self._btn_upload_youtube.clicked.connect(self._on_upload_now_youtube)
         footer_layout.addWidget(self._btn_upload_youtube)
 
@@ -1101,7 +1069,7 @@ class DubbingStudioWidget(QWidget):
 
     def _on_player_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self._btn_play.setText("▶  Phát")
+            self._set_play_state(False)
 
     def _sync_table_with_video(self, pos_ms: int) -> None:
         sec = pos_ms / 1000.0
@@ -1231,14 +1199,14 @@ class DubbingStudioWidget(QWidget):
             from PyQt6.QtCore import QUrl
             self.media_player.setSource(QUrl.fromLocalFile(video_path))
             self.media_player.pause()
-            self._btn_play.setText("▶  Phát")
+            self._set_play_state(False)
 
         # KIỂM TRA GIỮ LẠI BẢNG KỊCH BẢN:
         # Nếu preserve_table hoặc video liên quan (như bản lồng tiếng vừa tạo xong),
         # và bảng hiện tại đang có dữ liệu câu thoại -> TUYỆT ĐỐI KHÔNG XÓA BẢNG!
         if (preserve_table or is_related) and self.table.rowCount() > 0:
             if self._lbl_status_msg:
-                self._lbl_status_msg.setText(f"🎉 Kịch bản đã sẵn sàng ({self.table.rowCount()} câu thoại)")
+                self._lbl_status_msg.setText(f"Kịch bản đã sẵn sàng ({self.table.rowCount()} câu thoại)")
                 self._lbl_status_msg.setVisible(True)
             self.video_loaded.emit(video_path)
             return
@@ -1270,6 +1238,11 @@ class DubbingStudioWidget(QWidget):
         if f:
             self.load_video_to_studio(f)
 
+    def _on_open_gallery(self) -> None:
+        main_win = self.window()
+        if hasattr(main_win, "open_downloaded_videos_gallery"):
+            main_win.open_downloaded_videos_gallery()
+
     def _toggle_play(self) -> None:
         if not self.current_video_path:
             self._on_choose_video()
@@ -1280,10 +1253,18 @@ class DubbingStudioWidget(QWidget):
         else:
             self.player.play()
 
+    def _set_play_state(self, is_playing: bool) -> None:
+        if is_playing:
+            self._btn_play.setText("Tạm dừng")
+            self._btn_play.setIcon(get_svg_icon("pause", COLORS["text_primary"]))
+        else:
+            self._btn_play.setText("Phát")
+            self._btn_play.setIcon(get_svg_icon("play", COLORS["text_primary"]))
+
     def _stop_video(self) -> None:
         self.player.stop()
         self.player.setPosition(0)
-        self._btn_play.setText("▶  Phát")
+        self._set_play_state(False)
 
     def _seek_relative(self, delta_ms: int) -> None:
         new_pos = max(0, min(self.player.duration(), self.player.position() + delta_ms))
@@ -1300,10 +1281,7 @@ class DubbingStudioWidget(QWidget):
         self._lbl_time.setText(f"{format_ms_to_clock(self.player.position())} / {format_ms_to_clock(dur_ms)}")
 
     def _on_player_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        if state == QMediaPlayer.PlaybackState.PlayingState:
-            self._btn_play.setText("⏸  Tạm dừng")
-        else:
-            self._btn_play.setText("▶  Phát")
+        self._set_play_state(state == QMediaPlayer.PlaybackState.PlayingState)
 
     def _on_slider_pressed(self) -> None:
         self._slider_dragging = True
@@ -1502,7 +1480,7 @@ class DubbingStudioWidget(QWidget):
             pos_ms = int(float(start_sec) * 1000)
             self.player.setPosition(pos_ms)
             self.player.play()
-            self._btn_play.setText("⏸  Tạm dừng")
+            self._set_play_state(True)
 
     # ─────────────────────────────────────────────────────────────────
     # BÓC TÁCH & DỊCH AI
@@ -1711,7 +1689,7 @@ class DubbingStudioWidget(QWidget):
 
         try:
             from core.tiktok_uploader import generate_tiktok_caption
-            self._lbl_status_msg.setText("✨ Đang dùng Gemini phân tích kịch bản để tạo Caption TikTok...")
+            self._lbl_status_msg.setText("Đang dùng Gemini phân tích kịch bản để tạo Caption TikTok...")
             self._lbl_status_msg.setVisible(True)
             caption = generate_tiktok_caption(
                 script_content=segments,
@@ -1719,9 +1697,9 @@ class DubbingStudioWidget(QWidget):
                 video_title=v_title,
             )
             self._txt_tiktok_caption.setText(caption)
-            self._lbl_status_msg.setText(f"✅ Đã tạo Caption: {caption[:50]}...")
+            self._lbl_status_msg.setText(f"Đã tạo Caption: {caption[:50]}...")
         except Exception as e:
-            self._lbl_status_msg.setText(f"⚠ Lỗi tạo Caption: {e}")
+            self._lbl_status_msg.setText(f"Lỗi tạo Caption: {e}")
 
     def _on_upload_now_tiktok(self) -> None:
         """Đăng ngay video đang mở trong Studio lên kênh TikTok."""
@@ -1787,14 +1765,14 @@ class DubbingStudioWidget(QWidget):
 
         if success:
             self.on_tiktok_posted()
-            self._lbl_status_msg.setText("🎉 Đã đăng thành công video lên kênh TikTok!")
+            self._lbl_status_msg.setText("Đã đăng thành công video lên kênh TikTok!")
             QMessageBox.information(
                 self,
                 "Đăng TikTok thành công",
-                f"🎉 Đã đăng thành công video lên kênh TikTok:\n{os.path.basename(video_path)}"
+                f"Đã đăng thành công video lên kênh TikTok:\n{os.path.basename(video_path)}"
             )
         else:
-            self._lbl_status_msg.setText(f"❌ Lỗi đăng TikTok: {msg}")
+            self._lbl_status_msg.setText(f"Lỗi đăng TikTok: {msg}")
             QMessageBox.warning(
                 self,
                 "Lỗi đăng TikTok",
@@ -1857,7 +1835,7 @@ class DubbingStudioWidget(QWidget):
             self._btn_upload_youtube.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._lbl_status_msg.setVisible(True)
-        self._lbl_status_msg.setText("▶ Đang khởi động Playwright để tải video lên YouTube Studio...")
+        self._lbl_status_msg.setText("Đang khởi động Playwright để tải video lên YouTube Studio...")
 
         self._youtube_worker = YouTubeUploadWorker(
             video_path=self.current_video_path,
@@ -1880,21 +1858,21 @@ class DubbingStudioWidget(QWidget):
         self._progress_bar.setVisible(False)
 
         if success:
-            self._lbl_status_msg.setText(f"🎉 Đã tải lên YouTube: {video_url}")
+            self._lbl_status_msg.setText(f"Đã tải lên YouTube: {video_url}")
             QMessageBox.information(
                 self,
                 "Đăng YouTube thành công",
-                f"🎉 Đã đăng thành công video lên YouTube!\n\n"
-                f"🔗 Link video: {video_url}\n{msg}"
+                f"Đã đăng thành công video lên YouTube!\n\n"
+                f"Link video: {video_url}\n{msg}"
             )
             # Cập nhật trạng thái các dòng trong bảng
             for row in range(self.table.rowCount()):
-                status_item = QTableWidgetItem("▶ Đã đăng YouTube")
-                status_item.setForeground(QColor("#ff0000"))
+                status_item = QTableWidgetItem("Đã đăng YouTube")
+                status_item.setForeground(QColor(COLORS["success"]))
                 status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, self.COL_STATUS, status_item)
         else:
-            self._lbl_status_msg.setText(f"❌ Lỗi đăng YouTube: {msg}")
+            self._lbl_status_msg.setText(f"Lỗi đăng YouTube: {msg}")
             QMessageBox.warning(
                 self,
                 "Lỗi đăng YouTube",

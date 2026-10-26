@@ -34,6 +34,7 @@ from PyQt6.QtGui import (
     QKeySequence,
     QIntValidator,
     QTextCursor,
+    QTextOption,
 )
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 # pyrefly: ignore [missing-import]
@@ -89,7 +90,17 @@ from core.worker import DownloadWorker, ScanChannelWorker
 from ui.activation_dialog import ActivationDialog
 from ui.cookie_dialog import CookieFailedDialog, CookieGuideDialog, CookiePromptDialog
 from ui.dubbing_studio import DubbingStudioWidget
-from ui.styles import COLORS, PLATFORM_COLORS
+from ui.icons import get_svg_icon, get_svg_pixmap
+from ui.styles import (
+    COLORS,
+    PLATFORM_COLORS,
+    btn_primary_style,
+    btn_secondary_style,
+    btn_stop_style,
+    card_style,
+)
+from ui.widgets import CollapsibleSection, TableEmptyState
+from ui.video_gallery_dialog import VideoGalleryDialog
 
 _SETTINGS_FILE = Path.home() / ".omnigrab_settings.json"
 
@@ -221,7 +232,7 @@ class DubbingDialog(QDialog):
         root.setSpacing(18)
 
         # ── Header ──
-        lbl_header = QLabel("🎙 Cài đặt Module Lồng tiếng AI Tiếng Việt")
+        lbl_header = QLabel("Cài đặt Module Lồng tiếng AI")
         lbl_header.setStyleSheet(
             f"font-size:16px; font-weight:700; color:{c['text_primary']};"
         )
@@ -251,10 +262,10 @@ class DubbingDialog(QDialog):
         # Ngôn ngữ gốc
         grid.addWidget(self._lbl("Ngôn ngữ video gốc:"), 0, 0)
         self._combo_lang = QComboBox()
-        self._combo_lang.addItem("🇨🇳  Tiếng Trung (Douyin)", "zh-CN")
-        self._combo_lang.addItem("🇬🇧  Tiếng Anh (TikTok / Facebook)", "en")
-        self._combo_lang.addItem("🇯🇵  Tiếng Nhật", "ja")
-        self._combo_lang.addItem("🇰🇷  Tiếng Hàn", "ko")
+        self._combo_lang.addItem("Tiếng Trung (Douyin)", "zh-CN")
+        self._combo_lang.addItem("Tiếng Anh (TikTok / Facebook)", "en")
+        self._combo_lang.addItem("Tiếng Nhật", "ja")
+        self._combo_lang.addItem("Tiếng Hàn", "ko")
         # Chọn ngôn ngữ hiện tại
         idx = self._combo_lang.findData(src_lang)
         if idx < 0 and src_lang in ("zh", "zh-TW", "zh-CN"):
@@ -266,7 +277,7 @@ class DubbingDialog(QDialog):
         # Giọng đọc
         grid.addWidget(self._lbl("Giọng đọc AI:"), 1, 0)
         self._combo_voice = QComboBox()
-        self._combo_voice.addItem("🌐  Giọng Google Tiếng Việt (Chuẩn, tốc độ cao)", "vi")
+        self._combo_voice.addItem("Giọng Google Tiếng Việt (Chuẩn, tốc độ cao)", "vi")
         idx_v = self._combo_voice.findData(voice)
         if idx_v >= 0:
             self._combo_voice.setCurrentIndex(idx_v)
@@ -277,9 +288,9 @@ class DubbingDialog(QDialog):
         # Whisper model
         grid.addWidget(self._lbl("Độ chính xác nhận diện:"), 2, 0)
         self._combo_model = QComboBox()
-        self._combo_model.addItem("⚡  tiny — Nhanh nhất", "tiny")
-        self._combo_model.addItem("🎯  base — Cân bằng (khuyến nghị)", "base")
-        self._combo_model.addItem("🔬  medium — Chính xác cao nhất (nét)", "medium")
+        self._combo_model.addItem("tiny — Nhanh nhất", "tiny")
+        self._combo_model.addItem("base — Cân bằng (khuyến nghị)", "base")
+        self._combo_model.addItem("medium — Chính xác cao nhất (nét)", "medium")
         idx_m = self._combo_model.findData(whisper_model)
         if idx_m >= 0:
             self._combo_model.setCurrentIndex(idx_m)
@@ -294,7 +305,7 @@ class DubbingDialog(QDialog):
         self._slider_voice_vol.setToolTip("100% = gốc | 220% = chuẩn phòng thu kèm loudnorm | 300% = tối đa")
         self._lbl_voice_vol = QLabel(f"{voice_volume}%")
         self._lbl_voice_vol.setStyleSheet(
-            f"color:{c['accent_green']}; font-weight:700; min-width:40px;"
+            f"color:{c['status_success']}; font-weight:700; min-width:40px;"
         )
         self._slider_voice_vol.valueChanged.connect(
             lambda v: self._lbl_voice_vol.setText(f"{v}%")
@@ -314,7 +325,7 @@ class DubbingDialog(QDialog):
         self._slider_vol.setToolTip("0% = tắt tiếng gốc | 10% = chuẩn nền êm dịu | 50% = tiếng gốc to")
         self._lbl_vol = QLabel("0% (Đã tắt)" if mute_original else f"{bg_volume}%")
         self._lbl_vol.setStyleSheet(
-            f"color:{c['accent_orange']}; font-weight:700; min-width:50px;"
+            f"color:{c['status_warning']}; font-weight:700; min-width:50px;"
         )
         self._slider_vol.valueChanged.connect(self._on_slider_bg_changed)
         bg_vol_row.addWidget(self._slider_vol)
@@ -347,41 +358,18 @@ class DubbingDialog(QDialog):
         self._txt_key.setEchoMode(QLineEdit.EchoMode.Password)
         key_row.addWidget(self._txt_key, 1)
 
-        self._btn_toggle_key = QPushButton("👁")
+        self._btn_toggle_key = QPushButton("")
+        self._btn_toggle_key.setIcon(get_svg_icon("eye"))
         self._btn_toggle_key.setToolTip("Ẩn/Hiện API Key")
         self._btn_toggle_key.setFixedWidth(36)
-        self._btn_toggle_key.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['bg_input']};
-                color: {c['text_primary']};
-                border: 1px solid {c['bg_input_border']};
-                border-radius: 6px;
-                padding: 6px 0px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{
-                border-color: {c['border_focus']};
-            }}
-        """)
+        self._btn_toggle_key.setStyleSheet(btn_secondary_style())
         self._btn_toggle_key.clicked.connect(self._toggle_key_visibility)
         key_row.addWidget(self._btn_toggle_key)
 
-        btn_get_key = QPushButton("🔗 Lấy key (30s)")
+        btn_get_key = QPushButton("Lấy API Key")
+        btn_get_key.setIcon(get_svg_icon("external-link"))
         btn_get_key.setToolTip("Mở Google AI Studio để lấy API Key miễn phí 0đ")
-        btn_get_key.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['accent_blue']};
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-size: 12px;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{
-                background-color: {c['btn_secondary_hover']};
-            }}
-        """)
+        btn_get_key.setStyleSheet(btn_secondary_style())
         btn_get_key.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl("https://aistudio.google.com/app/apikey"))
         )
@@ -391,8 +379,8 @@ class DubbingDialog(QDialog):
         key_w.setLayout(key_row)
         key_box.addWidget(key_w)
 
-        lbl_hint = QLabel("💡 Miễn phí 0đ từ Google AI Studio, dịch 150 câu chỉ 1-2s, chuẩn xưng hô Hán-Việt.")
-        lbl_hint.setStyleSheet(f"color:{c['accent_green']}; font-size:11px;")
+        lbl_hint = QLabel("Miễn phí từ Google AI Studio, dịch nhanh, tự động phân tích ngữ cảnh phim.")
+        lbl_hint.setStyleSheet(f"color:{c['text_muted']}; font-size:11px;")
         key_box.addWidget(lbl_hint)
 
         key_container = QWidget()
@@ -405,7 +393,7 @@ class DubbingDialog(QDialog):
         # ── Trạng thái thư viện ──
         sep2 = self._make_sep()
         root.addWidget(sep2)
-        self._lbl_dep_status = QLabel("🔄 Đang kiểm tra thư viện...")
+        self._lbl_dep_status = QLabel("Đang kiểm tra thư viện...")
         self._lbl_dep_status.setStyleSheet(
             f"color:{c['text_muted']}; font-size:12px;"
         )
@@ -417,24 +405,13 @@ class DubbingDialog(QDialog):
         btn_row.addStretch()
 
         btn_cancel = QPushButton("Hủy bỏ")
+        btn_cancel.setStyleSheet(btn_secondary_style())
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
 
-        btn_save = QPushButton("💾  Lưu & Áp dụng")
-        btn_save.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['btn_green_bg']};
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 24px;
-                font-size: 13px;
-                font-weight: 700;
-            }}
-            QPushButton:hover {{
-                background-color: {c['btn_green_hover']};
-            }}
-        """)
+        btn_save = QPushButton("Lưu & Áp dụng")
+        btn_save.setIcon(get_svg_icon("check"))
+        btn_save.setStyleSheet(btn_primary_style())
         btn_save.clicked.connect(self._save_and_accept)
         btn_row.addWidget(btn_save)
         root.addLayout(btn_row)
@@ -444,10 +421,10 @@ class DubbingDialog(QDialog):
     def _toggle_key_visibility(self) -> None:
         if self._txt_key.echoMode() == QLineEdit.EchoMode.Password:
             self._txt_key.setEchoMode(QLineEdit.EchoMode.Normal)
-            self._btn_toggle_key.setText("🔒")
+            self._btn_toggle_key.setIcon(get_svg_icon("key"))
         else:
             self._txt_key.setEchoMode(QLineEdit.EchoMode.Password)
-            self._btn_toggle_key.setText("👁")
+            self._btn_toggle_key.setIcon(get_svg_icon("eye"))
 
     def _lbl(self, text: str) -> QLabel:
         lbl = QLabel(text)
@@ -466,20 +443,20 @@ class DubbingDialog(QDialog):
             deps = check_dub_dependencies()
             missing = [k for k, v in deps.items() if not v]
             if not missing:
-                self._lbl_dep_status.setText("✅ Tất cả thư viện sẵn sàng — có thể lồng tiếng ngay")
+                self._lbl_dep_status.setText("Tất cả thư viện sẵn sàng — có thể lồng tiếng ngay")
                 self._lbl_dep_status.setStyleSheet(
-                    f"color:{c['accent_green']}; font-size:12px; font-weight:600;"
+                    f"color:{c['status_success']}; font-size:12px; font-weight:600;"
                 )
             else:
                 self._lbl_dep_status.setText(
-                    f"⚠ Chưa cài: {', '.join(missing)}. "
+                    f"Chưa cài đặt: {', '.join(missing)}. "
                     "Chạy: pip install faster-whisper gTTS requests pydub"
                 )
                 self._lbl_dep_status.setStyleSheet(
-                    f"color:{c['accent_orange']}; font-size:12px; font-weight:600;"
+                    f"color:{c['status_warning']}; font-size:12px; font-weight:600;"
                 )
         except Exception:
-            self._lbl_dep_status.setText("⚠ Không kiểm tra được thư viện")
+            self._lbl_dep_status.setText("Không kiểm tra được thư viện")
 
     def _on_slider_bg_changed(self, v: int) -> None:
         if not self._chk_mute_orig.isChecked():
@@ -953,6 +930,10 @@ class MainWindow(QMainWindow):
         act_output.triggered.connect(self._on_choose_output_dir)
         menu_file.addAction(act_output)
 
+        act_view_downloads = QAction("Xem video đã tải xuống...", self)
+        act_view_downloads.triggered.connect(lambda: self.open_downloaded_videos_gallery())
+        menu_file.addAction(act_view_downloads)
+
         act_cookie = QAction("Nạp file Cookie (.txt)...", self)
         act_cookie.triggered.connect(self._on_choose_cookie)
         menu_file.addAction(act_cookie)
@@ -996,6 +977,13 @@ class MainWindow(QMainWindow):
 
         # ── 3. Công cụ ──
         menu_tools = bar.addMenu("Công cụ")
+
+        act_gallery = QAction("Xem video đã tải xuống...", self)
+        act_gallery.setShortcut(QKeySequence("Ctrl+4"))
+        act_gallery.triggered.connect(lambda: self.open_downloaded_videos_gallery())
+        menu_tools.addAction(act_gallery)
+
+        menu_tools.addSeparator()
 
         act_threads = QAction("Cài đặt số luồng tải đồng thời...", self)
         act_threads.triggered.connect(self._on_set_threads)
@@ -1109,7 +1097,18 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         # ── Tiêu đề trang ──
-        bar = self._page_titlebar("🔗  Tải theo danh sách liên kết", "Ctrl+1 để chuyển trang")
+        btn_gallery = QPushButton("Xem video đã tải")
+        btn_gallery.setIcon(get_svg_icon("film", COLORS["text_secondary"]))
+        btn_gallery.setStyleSheet(self._s_small_btn())
+        btn_gallery.setToolTip("Mở trình phát xem video đã tải xuống (Ctrl+4)")
+        btn_gallery.clicked.connect(lambda: self.open_downloaded_videos_gallery())
+
+        bar = self._page_titlebar(
+            "Tải theo danh sách liên kết",
+            "Ctrl+1 để chuyển trang",
+            icon_name="link",
+            extra_btn=btn_gallery,
+        )
         layout.addLayout(bar)
 
         # ── Card ô nhập URL ──
@@ -1121,18 +1120,20 @@ class MainWindow(QMainWindow):
         # Header với nút hỗ trợ
         hdr = QHBoxLayout()
         lbl = QLabel("Dán danh sách liên kết vào đây (mỗi dòng 1 link):")
-        lbl.setStyleSheet(f"color:{COLORS['text_secondary']}; font-size:12px;")
+        lbl.setStyleSheet(f"color:{COLORS['text_secondary']}; font-size:12.5px;")
         hdr.addWidget(lbl)
         hdr.addStretch()
 
-        btn_paste = QPushButton("📋 Dán clipboard")
-        btn_paste.setFixedHeight(27)
+        btn_paste = QPushButton("Dán clipboard")
+        btn_paste.setIcon(get_svg_icon("clipboard"))
+        btn_paste.setFixedHeight(28)
         btn_paste.setStyleSheet(self._s_small_btn())
         btn_paste.clicked.connect(self._on_paste_clipboard)
         hdr.addWidget(btn_paste)
 
-        btn_clear = QPushButton("🗑 Xóa hết")
-        btn_clear.setFixedHeight(27)
+        btn_clear = QPushButton("Xóa hết")
+        btn_clear.setIcon(get_svg_icon("trash"))
+        btn_clear.setFixedHeight(28)
         btn_clear.setStyleSheet(self._s_small_btn())
         btn_clear.clicked.connect(lambda: self._url_input.clear())
         hdr.addWidget(btn_clear)
@@ -1147,6 +1148,7 @@ class MainWindow(QMainWindow):
             "  https://www.tiktok.com/@user/video/1234567890"
         )
         self._url_input.setMinimumHeight(300)
+        self._url_input.textChanged.connect(self._update_button_states)
         card_l.addWidget(self._url_input, 1)
 
         self._url_count_label = QLabel("0 liên kết phát hiện")
@@ -1170,7 +1172,18 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         # ── Tiêu đề trang ──
-        bar = self._page_titlebar("📡  Quét & Tải theo Kênh / Hồ sơ", "Ctrl+2 để chuyển trang")
+        btn_gallery_ch = QPushButton("Xem video đã tải")
+        btn_gallery_ch.setIcon(get_svg_icon("film", COLORS["text_secondary"]))
+        btn_gallery_ch.setStyleSheet(self._s_small_btn())
+        btn_gallery_ch.setToolTip("Mở trình phát xem video đã tải xuống (Ctrl+4)")
+        btn_gallery_ch.clicked.connect(lambda: self.open_downloaded_videos_gallery())
+
+        bar = self._page_titlebar(
+            "Quét & Tải theo Kênh / Hồ sơ",
+            "Ctrl+2 để chuyển trang",
+            icon_name="user",
+            extra_btn=btn_gallery_ch,
+        )
         layout.addLayout(bar)
 
         # ── Card nhập kênh ──
@@ -1197,7 +1210,7 @@ class MainWindow(QMainWindow):
         self._scan_limit_combo.addItem("All")
         self._scan_limit_combo.setCurrentText("50")
         self._scan_limit_combo.setValidator(QIntValidator(1, 1000000, self._scan_limit_combo))
-        self._scan_limit_combo.setFixedWidth(100)
+        self._scan_limit_combo.setFixedWidth(90)
         self._scan_limit_combo.setToolTip(
             "Nhập số video tối đa cần quét hoặc mở danh sách để chọn All. All tiếp tục phân trang đến khi nguồn không còn trả video."
         )
@@ -1207,35 +1220,21 @@ class MainWindow(QMainWindow):
         lbl_vid.setStyleSheet(f"color:{COLORS['text_secondary']}; font-size:12px;")
         url_row.addWidget(lbl_vid)
 
-        self._btn_scan = QPushButton("🔍  Quét kênh")
+        self._btn_scan = QPushButton("Quét kênh")
+        self._btn_scan.setIcon(get_svg_icon("search"))
         self._btn_scan.setFixedHeight(34)
-        self._btn_scan.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['accent_cyan']};
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 0 18px;
-            }}
-            QPushButton:hover {{ background-color: #22d3ee; }}
-            QPushButton:disabled {{
-                background-color: {COLORS['border']};
-                color: {COLORS['text_placeholder']};
-            }}
-        """)
+        self._btn_scan.setStyleSheet(btn_secondary_style())
         url_row.addWidget(self._btn_scan)
         tl.addLayout(url_row)
 
         # ── Banner trạng thái Cookie trực quan ──
         tl.addWidget(self._build_cookie_banner())
 
-        # Bộ lọc Viral
+        # Bộ lọc Viral thu gọn được
         tl.addWidget(self._build_filter_section())
 
         # Status
-        self._scan_status_label = QLabel("Nhập URL kênh rồi nhấn 🔍 Quét kênh để bắt đầu.")
+        self._scan_status_label = QLabel("Nhập URL kênh rồi nhấn Quét kênh để bắt đầu.")
         self._scan_status_label.setStyleSheet(
             f"color:{COLORS['text_muted']}; font-size:12px;"
         )
@@ -1276,6 +1275,7 @@ class MainWindow(QMainWindow):
             "✓", "Tiêu đề video", "Lượt xem", "Lượt thích", "Thời lượng", "Ngày đăng", "URL (Nhấp để mở)"
         ])
         h = self._result_table.horizontalHeader()
+        h.setMinimumSectionSize(36)
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
@@ -1283,11 +1283,11 @@ class MainWindow(QMainWindow):
         h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         h.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
-        self._result_table.setColumnWidth(0, 34)
-        self._result_table.setColumnWidth(2, 85)
-        self._result_table.setColumnWidth(3, 85)
-        self._result_table.setColumnWidth(4, 78)
-        self._result_table.setColumnWidth(5, 92)
+        self._result_table.setColumnWidth(0, 36)
+        self._result_table.setColumnWidth(2, 95)
+        self._result_table.setColumnWidth(3, 95)
+        self._result_table.setColumnWidth(4, 90)
+        self._result_table.setColumnWidth(5, 105)
         self._result_table.verticalHeader().setVisible(False)
         self._result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._result_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1299,20 +1299,31 @@ class MainWindow(QMainWindow):
         self._result_table.cellDoubleClicked.connect(self._on_table_cell_double_clicked)
         rl.addWidget(self._result_table, 1)
 
+        # Empty State cho bảng khi chưa có video nào
+        self._channel_empty_state = TableEmptyState(
+            self._result_table,
+            icon_name="search",
+            title="Chưa có video nào",
+            description="Nhập liên kết kênh ở trên và nhấn Quét kênh để tải danh sách video.",
+        )
+
         # Nút chọn + xuất
         btn_bar = QHBoxLayout()
         btn_bar.setSpacing(8)
-        self._btn_select_all = QPushButton("☑ Chọn tất cả")
+        self._btn_select_all = QPushButton("Chọn tất cả")
+        self._btn_select_all.setIcon(get_svg_icon("check-square"))
         self._btn_select_all.setFixedHeight(30)
         self._btn_select_all.setStyleSheet(self._s_small_btn())
         btn_bar.addWidget(self._btn_select_all)
 
-        self._btn_deselect_all = QPushButton("☐ Bỏ chọn tất cả")
+        self._btn_deselect_all = QPushButton("Bỏ chọn")
+        self._btn_deselect_all.setIcon(get_svg_icon("square"))
         self._btn_deselect_all.setFixedHeight(30)
         self._btn_deselect_all.setStyleSheet(self._s_small_btn())
         btn_bar.addWidget(self._btn_deselect_all)
 
-        self._btn_export_csv = QPushButton("📊 Xuất CSV")
+        self._btn_export_csv = QPushButton("Xuất CSV")
+        self._btn_export_csv.setIcon(get_svg_icon("file-spreadsheet"))
         self._btn_export_csv.setFixedHeight(30)
         self._btn_export_csv.setStyleSheet(self._s_small_btn())
         self._btn_export_csv.setEnabled(False)
@@ -1325,12 +1336,6 @@ class MainWindow(QMainWindow):
             f"color:{COLORS['text_muted']}; font-size:12px;"
         )
         btn_bar.addWidget(self._lbl_selected_count)
-
-        hint = QLabel("▶ Nhấn BẮT ĐẦU TẢI ở dưới để tải")
-        hint.setStyleSheet(
-            f"color:{COLORS['accent_cyan']}; font-size:11px; font-weight:600;"
-        )
-        btn_bar.addWidget(hint)
         rl.addLayout(btn_bar)
         layout.addWidget(card_res, 1)
 
@@ -1349,27 +1354,30 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(10)
 
-        self._cookie_status_icon = QLabel("🍪")
-        self._cookie_status_icon.setStyleSheet("font-size: 14px;")
+        self._cookie_status_icon = QLabel()
+        self._cookie_status_icon.setPixmap(get_svg_pixmap("cookie", color=c['status_warning'], size=18))
         layout.addWidget(self._cookie_status_icon)
 
         self._cookie_status_text = QLabel("Cookie: Chưa nạp (TikTok / Douyin yêu cầu Cookie để quét toàn bộ kênh)")
-        self._cookie_status_text.setStyleSheet(f"color: {c['accent_orange']}; font-size: 12px; font-weight: 500;")
+        self._cookie_status_text.setStyleSheet(f"color: {c['status_warning']}; font-size: 12px; font-weight: 500;")
         layout.addWidget(self._cookie_status_text, 1)
 
-        self._btn_banner_load_cookie = QPushButton("🍪 Nạp Cookie (.txt)")
+        self._btn_banner_load_cookie = QPushButton("Nạp Cookie (.txt)")
+        self._btn_banner_load_cookie.setIcon(get_svg_icon("cookie"))
         self._btn_banner_load_cookie.setFixedHeight(27)
         self._btn_banner_load_cookie.setStyleSheet(self._s_small_btn())
         self._btn_banner_load_cookie.clicked.connect(self._on_choose_cookie)
         layout.addWidget(self._btn_banner_load_cookie)
 
-        self._btn_banner_guide_cookie = QPushButton("❓ Hướng dẫn lấy Cookie")
+        self._btn_banner_guide_cookie = QPushButton("Hướng dẫn")
+        self._btn_banner_guide_cookie.setIcon(get_svg_icon("info"))
         self._btn_banner_guide_cookie.setFixedHeight(27)
         self._btn_banner_guide_cookie.setStyleSheet(self._s_small_btn())
         self._btn_banner_guide_cookie.clicked.connect(self._show_cookie_guide)
         layout.addWidget(self._btn_banner_guide_cookie)
 
-        self._btn_banner_clear_cookie = QPushButton("✕ Bỏ")
+        self._btn_banner_clear_cookie = QPushButton("Bỏ")
+        self._btn_banner_clear_cookie.setIcon(get_svg_icon("x"))
         self._btn_banner_clear_cookie.setFixedHeight(27)
         self._btn_banner_clear_cookie.setStyleSheet(self._s_small_btn())
         self._btn_banner_clear_cookie.clicked.connect(self._on_clear_cookie)
@@ -1378,8 +1386,8 @@ class MainWindow(QMainWindow):
 
         self._cookie_banner.setStyleSheet(f"""
             QFrame#cookie_banner {{
-                background-color: rgba(245, 158, 11, 0.12);
-                border: 1px solid rgba(245, 158, 11, 0.35);
+                background-color: {c['status_warning_bg']};
+                border: 1px solid {c['status_warning_border']};
                 border-radius: 6px;
             }}
         """)
@@ -1392,106 +1400,96 @@ class MainWindow(QMainWindow):
         c = COLORS
         if self.cookies_path and os.path.isfile(self.cookies_path):
             filename = os.path.basename(self.cookies_path)
-            self._cookie_status_icon.setText("✅")
+            self._cookie_status_icon.setPixmap(get_svg_pixmap("check", color=c["status_success"], size=18))
             self._cookie_status_text.setText(
-                f"Cookie: Đã nạp ({filename}) — Sẵn sàng quét kênh TikTok / Douyin / Facebook"
+                f"Cookie: Đã nạp ({filename}) — Sẵn sàng quét kênh"
             )
             self._cookie_status_text.setStyleSheet(
-                f"color: {c['accent_green']}; font-size: 12px; font-weight: 600;"
+                f"color: {c['status_success']}; font-size: 12px; font-weight: 600;"
             )
             self._cookie_banner.setStyleSheet(f"""
                 QFrame#cookie_banner {{
-                    background-color: rgba(34, 197, 94, 0.12);
-                    border: 1px solid rgba(34, 197, 94, 0.35);
+                    background-color: {c['status_success_bg']};
+                    border: 1px solid {c['status_success_border']};
                     border-radius: 6px;
                 }}
             """)
-            self._btn_banner_load_cookie.setText("🔄 Đổi Cookie")
+            self._btn_banner_load_cookie.setText("Đổi Cookie")
+            self._btn_banner_load_cookie.setIcon(get_svg_icon("refresh"))
             self._btn_banner_clear_cookie.setVisible(True)
         else:
-            self._cookie_status_icon.setText("🍪")
+            self._cookie_status_icon.setPixmap(get_svg_pixmap("cookie", color=c["status_warning"], size=18))
             self._cookie_status_text.setText(
-                "Cookie: Chưa nạp (Kênh Douyin quét trực tiếp KHÔNG cần Cookie)"
+                "Cookie: Chưa nạp (Kênh Douyin quét trực tiếp không cần Cookie)"
             )
             self._cookie_status_text.setStyleSheet(
-                f"color: {c['accent_orange']}; font-size: 12px; font-weight: 500;"
+                f"color: {c['status_warning']}; font-size: 12px; font-weight: 500;"
             )
             self._cookie_banner.setStyleSheet(f"""
                 QFrame#cookie_banner {{
-                    background-color: rgba(245, 158, 11, 0.12);
-                    border: 1px solid rgba(245, 158, 11, 0.35);
+                    background-color: {c['status_warning_bg']};
+                    border: 1px solid {c['status_warning_border']};
                     border-radius: 6px;
                 }}
             """)
-            self._btn_banner_load_cookie.setText("🍪 Nạp Cookie (.txt)")
+            self._btn_banner_load_cookie.setText("Nạp Cookie (.txt)")
+            self._btn_banner_load_cookie.setIcon(get_svg_icon("cookie"))
             self._btn_banner_clear_cookie.setVisible(False)
 
-    def _build_filter_section(self) -> QGroupBox:
+    def _build_filter_section(self) -> QWidget:
         c = COLORS
-        grp = QGroupBox("🏆  Bộ lọc video Viral (Tùy chọn)")
-        grp.setStyleSheet(f"""
-            QGroupBox {{
-                color: {c['accent_orange']};
-                font-size: 12px;
-                font-weight: 700;
-                border: 1px solid {c['border']};
-                border-radius: 8px;
-                margin-top: 8px;
-                padding-top: 14px;
-                background-color: {c['bg_card']};
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                padding: 0 8px;
-                left: 12px;
-            }}
-        """)
-        layout = QGridLayout(grp)
-        layout.setContentsMargins(12, 14, 12, 10)
-        layout.setHorizontalSpacing(14)
-        layout.setVerticalSpacing(8)
+        self._filter_section = CollapsibleSection(
+            title="Bộ lọc nâng cao (Lượt xem, thích, thời lượng, ngày)",
+            icon_name="filter",
+            initially_expanded=False,
+        )
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
 
         def flbl(t: str) -> QLabel:
             lbl = QLabel(t)
             lbl.setStyleSheet(f"color:{c['text_secondary']}; font-size:12px;")
             return lbl
 
-        layout.addWidget(flbl("👁 Lượt xem tối thiểu:"), 0, 0)
+        grid.addWidget(flbl("Lượt xem tối thiểu:"), 0, 0)
         self._filter_min_views = QSpinBox()
         self._filter_min_views.setRange(0, 10_000_000)
         self._filter_min_views.setSingleStep(1000)
         self._filter_min_views.setSpecialValueText("Không lọc")
         self._filter_min_views.setMinimumWidth(110)
-        layout.addWidget(self._filter_min_views, 0, 1)
+        grid.addWidget(self._filter_min_views, 0, 1)
 
-        layout.addWidget(flbl("♥ Lượt thích tối thiểu:"), 0, 2)
+        grid.addWidget(flbl("Lượt thích tối thiểu:"), 0, 2)
         self._filter_min_likes = QSpinBox()
         self._filter_min_likes.setRange(0, 1_000_000)
         self._filter_min_likes.setSingleStep(100)
         self._filter_min_likes.setSpecialValueText("Không lọc")
         self._filter_min_likes.setMinimumWidth(110)
-        layout.addWidget(self._filter_min_likes, 0, 3)
+        grid.addWidget(self._filter_min_likes, 0, 3)
 
-        layout.addWidget(flbl("⏱ Thời lượng:"), 1, 0)
+        grid.addWidget(flbl("Thời lượng:"), 1, 0)
         self._filter_duration = QComboBox()
         self._filter_duration.addItems(["Tất cả", "Dưới 60 giây (Shorts/Reels)", "Trên 60 giây"])
         self._filter_duration.setMinimumWidth(150)
-        layout.addWidget(self._filter_duration, 1, 1)
+        grid.addWidget(self._filter_duration, 1, 1)
 
-        layout.addWidget(flbl("📅 Ngày đăng:"), 1, 2)
+        grid.addWidget(flbl("Ngày đăng:"), 1, 2)
         self._filter_date = QComboBox()
         self._filter_date.addItems(["Tất cả", "3 ngày qua", "7 ngày qua", "30 ngày qua"])
         self._filter_date.setMinimumWidth(150)
-        layout.addWidget(self._filter_date, 1, 3)
+        grid.addWidget(self._filter_date, 1, 3)
 
         self._filter_min_views.valueChanged.connect(self._on_viral_filter_changed)
         self._filter_min_likes.valueChanged.connect(self._on_viral_filter_changed)
         self._filter_duration.currentIndexChanged.connect(self._on_viral_filter_changed)
         self._filter_date.currentIndexChanged.connect(self._on_viral_filter_changed)
 
-        layout.setColumnStretch(4, 1)
-        return grp
+        grid.setColumnStretch(4, 1)
+        self._filter_section.content_layout.addLayout(grid)
+        return self._filter_section
 
     # ─────────────────────────────────────────────────────────────────
     # CỘT PHẢI — Tiến trình & Log
@@ -1587,17 +1585,20 @@ class MainWindow(QMainWindow):
         log_hdr.addWidget(lbl_log)
         log_hdr.addStretch()
 
-        self._btn_export_errors = QPushButton("📤 Xuất file lỗi (.txt)")
+        self._btn_export_errors = QPushButton("Xuất file lỗi (.txt)")
+        self._btn_export_errors.setIcon(get_svg_icon("file-text"))
         self._btn_export_errors.setFixedHeight(26)
         self._btn_export_errors.setStyleSheet(self._s_small_btn())
         self._btn_export_errors.setEnabled(False)
         log_hdr.addWidget(self._btn_export_errors)
         cl.addLayout(log_hdr)
 
-        # Log view
+        # Log view có word wrap và thanh cuộn mượt
         self._log_view = QTextEdit()
         self._log_view.setReadOnly(True)
         self._log_view.setMinimumHeight(120)
+        self._log_view.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self._log_view.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self._log_view.setStyleSheet(f"""
             QTextEdit {{
                 background-color: {c['bg_input']};
@@ -1607,67 +1608,31 @@ class MainWindow(QMainWindow):
                 padding: 8px;
                 font-family: "Cascadia Code", "Consolas", monospace;
                 font-size: 11px;
-                line-height: 1.6;
+                line-height: 1.5;
             }}
         """)
         cl.addWidget(self._log_view, 1)
 
-        # ── Hàng nút điều khiển ──
+        # ── Hàng nút điều khiển (Chỉ 1 nút Primary duy nhất) ──
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
         btn_row.addStretch()
 
-        self._btn_stop = QPushButton("⏹  Dừng tải")
-        self._btn_stop.setFixedHeight(44)
+        self._btn_stop = QPushButton("Dừng tải")
+        self._btn_stop.setIcon(get_svg_icon("stop", color=COLORS["status_error"]))
+        self._btn_stop.setFixedHeight(40)
         self._btn_stop.setEnabled(False)
         self._btn_stop.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._btn_stop.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {c['text_secondary']};
-                border: 1.5px solid {c['btn_outline_border']};
-                border-radius: 6px;
-                font-size: 13px;
-                font-weight: 600;
-                padding: 0 22px;
-            }}
-            QPushButton:hover {{
-                background-color: {c['btn_outline_hover']};
-                border-color: {c['text_secondary']};
-                color: {c['text_primary']};
-            }}
-            QPushButton:disabled {{
-                color: {c['text_placeholder']};
-                border-color: {c['border']};
-            }}
-        """)
+        self._btn_stop.setStyleSheet(btn_stop_style())
         btn_row.addWidget(self._btn_stop)
 
-        self._btn_start = QPushButton("▶  BẮt ĐẦU TẢI")
-        self._btn_start.setFixedHeight(44)
+        self._btn_start = QPushButton("BẮT ĐẦU TẢI")
+        self._btn_start.setIcon(get_svg_icon("play", color="#ffffff"))
+        self._btn_start.setFixedHeight(40)
         self._btn_start.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._btn_start.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {c['btn_green_bg']};
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 10px 28px;
-                letter-spacing: 0.5px;
-            }}
-            QPushButton:hover {{
-                background-color: {c['btn_green_hover']};
-            }}
-            QPushButton:pressed {{
-                background-color: #15803d;
-            }}
-            QPushButton:disabled {{
-                background-color: {c['border']};
-                color: {c['text_placeholder']};
-            }}
-        """)
+        self._btn_start.setStyleSheet(btn_primary_style())
+        self._btn_start.setEnabled(False)
+        self._btn_start.setToolTip("Dán ít nhất một liên kết video để tải")
         btn_row.addWidget(self._btn_start)
         cl.addLayout(btn_row)
 
@@ -1692,34 +1657,35 @@ class MainWindow(QMainWindow):
                 color: {c['text_secondary']};
                 border-top: 1px solid {c['border']};
                 font-size: 12px;
-                padding: 2px 8px;
+                padding: 3px 10px;
             }}
         """)
         # Thông tin thư mục + lồng tiếng
-        self._sb_label = QLabel("📁 Lưu tại: —  |  🎙 Lồng tiếng: TắT")
-        self._sb_label.setStyleSheet(f"color:{c['text_muted']}; padding: 0 4px;")
+        self._sb_label = QLabel("Lưu tại: —   |   Lồng tiếng: TẮT")
+        self._sb_label.setStyleSheet(f"color:{c['text_muted']}; padding: 0 4px; font-size: 12px;")
         sb.addWidget(self._sb_label)
 
         # ── Nhãn bản quyền (bên phải StatusBar) ──
         self._sb_license_label = QLabel("")
         self._sb_license_label.setStyleSheet(
-            f"color:{c['text_muted']}; padding: 0 8px; font-size: 11px;"
+            f"color:{c['text_muted']}; padding: 0 8px; font-size: 11.5px; font-weight: 600;"
         )
         # Nút Nâng cấp (ẩn khi đã PRO)
-        self._sb_upgrade_btn = QPushButton("⬆ Nâng cấp PRO")
-        self._sb_upgrade_btn.setFixedHeight(22)
+        self._sb_upgrade_btn = QPushButton("Nâng cấp PRO")
+        self._sb_upgrade_btn.setIcon(get_svg_icon("shield-check", color=c['status_warning']))
+        self._sb_upgrade_btn.setFixedHeight(24)
         self._sb_upgrade_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(245, 158, 11, 0.2);
-                color: {c['accent_orange']};
-                border: 1px solid {c['accent_orange']};
+                background-color: {c['status_warning_bg']};
+                color: {c['status_warning']};
+                border: 1px solid {c['status_warning_border']};
                 border-radius: 4px;
-                font-size: 11px;
+                font-size: 11.5px;
                 font-weight: 600;
                 padding: 0 10px;
             }}
             QPushButton:hover {{
-                background-color: rgba(245, 158, 11, 0.35);
+                background-color: rgba(245, 158, 11, 0.22);
             }}
         """)
         self._sb_upgrade_btn.clicked.connect(self._on_open_activation_dialog)
@@ -2127,18 +2093,19 @@ class MainWindow(QMainWindow):
         if is_licensed:
             self._sb_license_label.setText(status_text)
             self._sb_license_label.setStyleSheet(
-                f"color: {c['accent_green']}; padding: 0 8px; font-size: 11px; font-weight: 700;"
+                f"color: {c['status_success']}; padding: 0 8px; font-size: 11.5px; font-weight: 600;"
             )
             self._sb_upgrade_btn.setVisible(False)
         else:
-            trial_text = f"{status_text}  "
-            self._sb_license_label.setText(trial_text)
-            if trial_remaining <= 3:
-                color = c['accent_red']
+            self._sb_license_label.setText(status_text)
+            if trial_remaining <= 0:
+                color = c['status_error']
+            elif trial_remaining <= 3:
+                color = c['status_warning']
             else:
-                color = c['accent_orange']
+                color = c['text_secondary']
             self._sb_license_label.setStyleSheet(
-                f"color: {color}; padding: 0 8px; font-size: 11px; font-weight: 600;"
+                f"color: {color}; padding: 0 8px; font-size: 11.5px; font-weight: 600;"
             )
             self._sb_upgrade_btn.setVisible(True)
 
@@ -2776,6 +2743,23 @@ class MainWindow(QMainWindow):
             self._lbl_scan_count.setText(f"{visible_count}/{total_rows} video")
         else:
             self._lbl_scan_count.setText(f"{total_rows} video")
+
+        active_conditions = 0
+        if min_views > 0:
+            active_conditions += 1
+        if min_likes > 0:
+            active_conditions += 1
+        if duration_filter != "Tất cả":
+            active_conditions += 1
+        if date_filter != "Tất cả":
+            active_conditions += 1
+
+        if hasattr(self, "_filter_section"):
+            if active_conditions > 0:
+                self._filter_section.set_badge(f"Đang lọc ({active_conditions})", is_active=True)
+            else:
+                self._filter_section.set_badge("", is_active=False)
+
         self._update_selected_count()
 
     def _on_select_all(self) -> None:
@@ -2830,7 +2814,7 @@ class MainWindow(QMainWindow):
             player_url = self._get_tiktok_player_url(url, video or {})
             QDesktopServices.openUrl(QUrl(player_url))
             label = "trình phát TikTok" if player_url != url else "video trong trình duyệt"
-            self._status_bar.showMessage(f"🌐 Đang mở {label}: {player_url}", 5000)
+            self._status_bar.showMessage(f"Đang mở {label}: {player_url}", 5000)
 
     @staticmethod
     def _get_tiktok_player_url(url: str, video: Optional[Dict[str, Any]] = None) -> str:
@@ -2859,40 +2843,26 @@ class MainWindow(QMainWindow):
         title = (video.get("title") if video else "") or (self._result_table.item(row, 1).text().strip() if self._result_table.item(row, 1) else "")
 
         menu = QMenu(self)
-        menu.setStyleSheet(f"""
-            QMenu {{
-                background-color: {COLORS['bg_card']};
-                color: {COLORS['text_primary']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 6px;
-                padding: 4px;
-                font-size: 12px;
-            }}
-            QMenu::item {{
-                padding: 6px 20px 6px 10px;
-                border-radius: 4px;
-            }}
-            QMenu::item:selected {{
-                background-color: {COLORS['accent_blue']};
-                color: #ffffff;
-            }}
-        """)
-
-        act_open = menu.addAction("🌐  Mở video (TikTok dùng player nhúng)")
-        act_open_original = menu.addAction("↗  Mở URL gốc của video")
+        act_open = menu.addAction("Mở video (Player nhúng)")
+        act_open.setIcon(get_svg_icon("play"))
+        act_open_original = menu.addAction("Mở URL gốc của video")
+        act_open_original.setIcon(get_svg_icon("external-link"))
         menu.addSeparator()
-        act_copy_url = menu.addAction("📋  Sao chép liên kết URL")
-        act_copy_title = menu.addAction("📝  Sao chép tiêu đề video")
+        act_copy_url = menu.addAction("Sao chép liên kết URL")
+        act_copy_url.setIcon(get_svg_icon("link"))
+        act_copy_title = menu.addAction("Sao chép tiêu đề video")
+        act_copy_title.setIcon(get_svg_icon("clipboard"))
         menu.addSeparator()
         is_checked = chk_item and chk_item.checkState() == Qt.CheckState.Checked
-        act_toggle = menu.addAction("☐  Bỏ chọn video này" if is_checked else "☑  Tích chọn video này")
+        act_toggle = menu.addAction("Bỏ chọn video này" if is_checked else "Tích chọn video này")
+        act_toggle.setIcon(get_svg_icon("square" if is_checked else "check-square"))
 
         action = menu.exec(self._result_table.viewport().mapToGlobal(pos))
         if action == act_open:
             self._open_video_url_at_row(row)
         elif action == act_open_original and url:
             QDesktopServices.openUrl(QUrl(url))
-            self._status_bar.showMessage(f"🌐 Đang mở URL gốc: {url}", 5000)
+            self._status_bar.showMessage(f"Đang mở URL gốc: {url}", 5000)
         elif action == act_copy_url and url:
             QApplication.clipboard().setText(url)
             self._status_bar.showMessage(f"Đã sao chép URL: {url}", 3000)
@@ -2912,10 +2882,13 @@ class MainWindow(QMainWindow):
             and self._result_table.item(r, 0).checkState() == Qt.CheckState.Checked
         )
         self._lbl_selected_count.setText(f"Đã chọn: {count} video")
-        clr = COLORS["accent_green"] if count > 0 else COLORS["text_muted"]
+        clr = COLORS["status_success"] if count > 0 else COLORS["text_muted"]
         self._lbl_selected_count.setStyleSheet(
             f"color:{clr}; font-size:12px;" + (" font-weight:600;" if count > 0 else "")
         )
+        if hasattr(self, "_btn_export_csv"):
+            self._btn_export_csv.setEnabled(count > 0)
+        self._update_button_states()
 
     def _on_export_csv(self) -> None:
         export_videos = []
@@ -3614,33 +3587,64 @@ class MainWindow(QMainWindow):
             tt_disp = f"BẬT (Cách {delay}p)"
         else:
             tt_disp = "TẮT"
-        self._sb_label.setText(f"📁 Lưu tại: {dir_disp}  |  🎙 Lồng tiếng: {dub_disp}  |  📤 Auto TikTok: {tt_disp}")
+        self._sb_label.setText(f"Thư mục: {dir_disp}  │  Lồng tiếng: {dub_disp}  │  Auto TikTok: {tt_disp}")
 
     def update_action_buttons_state(self, index: Optional[int] = None) -> None:
-        """Tự động đổi nhãn và trạng thái nút bấm theo màn hình đang mở."""
+        """Tự động đổi nhãn và trạng thái nút bấm theo màn hình đang mở.
+        Vô hiệu hóa nút Tải khi chưa có link hoặc chưa chọn video nào.
+        """
         if index is None or not isinstance(index, int):
             index = self.stacked_widget.currentIndex()
 
+        is_busy = bool(self._is_downloading or self._is_dubbing)
+        can_start = False
+        tooltip_msg = ""
+
         if index == 0:
             # Trang 0: Tải theo danh sách link lẻ
-            self.btn_start.setText("▶ BẮT ĐẦU TẢI")
-            self.btn_stop.setText("⏹ Dừng tải")
+            self.btn_start.setText("Bắt đầu tải")
+            self.btn_start.setIcon(get_svg_icon("download", "#ffffff"))
+            self.btn_stop.setText("Dừng tải")
+            self.btn_stop.setIcon(get_svg_icon("stop", COLORS["danger"]))
+            has_urls = bool(hasattr(self, "_url_input") and self._url_input.toPlainText().strip())
+            can_start = (not is_busy) and has_urls
+            if not has_urls:
+                tooltip_msg = "Vui lòng nhập ít nhất một liên kết video để tải"
         elif index == 1:
             # Trang 1: Quét Kênh / Hồ sơ
-            self.btn_start.setText("🚀 TẢI VIDEO ĐÃ CHỌN")
-            self.btn_stop.setText("⏹ Dừng tải")
+            self.btn_start.setText("Tải video đã chọn")
+            self.btn_start.setIcon(get_svg_icon("download", "#ffffff"))
+            self.btn_stop.setText("Dừng tải")
+            self.btn_stop.setIcon(get_svg_icon("stop", COLORS["danger"]))
+            selected_count = 0
+            if hasattr(self, "_result_table"):
+                for row in range(self._result_table.rowCount()):
+                    chk = self._result_table.cellWidget(row, 0)
+                    if isinstance(chk, QCheckBox) and chk.isChecked():
+                        selected_count += 1
+            can_start = (not is_busy) and (selected_count > 0)
+            if selected_count == 0:
+                tooltip_msg = "Vui lòng chọn ít nhất một video trong bảng để tải"
+            else:
+                self.btn_start.setText(f"Tải video đã chọn ({selected_count})")
         elif index == 2:
             # Trang 2: Studio Lồng tiếng & Soát kịch bản
-            self.btn_start.setText("🎙️ BẮT ĐẦU LỒNG TIẾNG")
-            self.btn_stop.setText("⏹ Dừng lồng tiếng")
+            self.btn_start.setText("Bắt đầu lồng tiếng")
+            self.btn_start.setIcon(get_svg_icon("mic", "#ffffff"))
+            self.btn_stop.setText("Dừng lồng tiếng")
+            self.btn_stop.setIcon(get_svg_icon("stop", COLORS["danger"]))
+            has_video = bool(hasattr(self, "dubbing_studio") and getattr(self.dubbing_studio, "current_video_path", None))
+            can_start = (not is_busy) and has_video
+            if not has_video:
+                tooltip_msg = "Vui lòng tải hoặc chọn video trong Studio để bắt đầu lồng tiếng"
 
-        is_busy = bool(self._is_downloading or self._is_dubbing)
-        if is_busy and self.btn_stop.text().startswith("⏳"):
+        if is_busy and self.btn_stop.text().startswith("Đang dừng"):
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(False)
         else:
-            self.btn_start.setEnabled(not is_busy)
+            self.btn_start.setEnabled(can_start)
             self.btn_stop.setEnabled(is_busy)
+            self.btn_start.setToolTip(tooltip_msg if not can_start else "")
 
     def _update_button_states(self) -> None:
         self.update_action_buttons_state(self.stacked_widget.currentIndex())
@@ -3667,8 +3671,8 @@ class MainWindow(QMainWindow):
     def _append_log_raw(self, timestamp: str, tag: str, message: str) -> None:
         tag_color = PLATFORM_COLORS.get(tag, COLORS["text_muted"])
         html = (
-            f'<p style="margin:1px 0; white-space:pre;">'
-            f'<span style="color:{COLORS["text_placeholder"]}; font-size:11px;">{timestamp}</span>'
+            f'<p style="margin:2px 0; white-space:pre-wrap; word-break:break-word; line-height:1.4;">'
+            f'<span style="color:{COLORS["text_muted"]}; font-size:11px;">{timestamp}</span>'
             f'&nbsp;&nbsp;'
             f'<span style="color:{tag_color}; font-weight:700; font-size:11px;">[{tag}]</span>'
             f'&nbsp;&nbsp;'
@@ -3724,16 +3728,29 @@ class MainWindow(QMainWindow):
         """)
         return b
 
-    def _page_titlebar(self, title: str, hint: str) -> QHBoxLayout:
+    def _page_titlebar(
+        self,
+        title: str,
+        hint: str,
+        icon_name: str | None = None,
+        extra_btn: QWidget | None = None,
+    ) -> QHBoxLayout:
         row = QHBoxLayout()
+        row.setSpacing(8)
+        if icon_name:
+            ic_lbl = QLabel()
+            ic_lbl.setPixmap(get_svg_pixmap(icon_name, size=18, color=COLORS["brand"]))
+            row.addWidget(ic_lbl)
         lbl = QLabel(title)
         lbl.setStyleSheet(
             f"font-size:14px; font-weight:700; color:{COLORS['text_primary']};"
         )
         row.addWidget(lbl)
         row.addStretch()
+        if extra_btn:
+            row.addWidget(extra_btn)
         h = QLabel(hint)
-        h.setStyleSheet(f"color:{COLORS['text_placeholder']}; font-size:11px;")
+        h.setStyleSheet(f"color:{COLORS['text_muted']}; font-size:11px;")
         row.addWidget(h)
         return row
 
@@ -3753,6 +3770,26 @@ class MainWindow(QMainWindow):
                 color: {c['text_primary']};
             }}
         """
+
+    # ══════════════════════════════════════════════════════════════════
+    # THƯ VIỆN & XEM VIDEO ĐÃ TẢI XUỐNG (GALLERY PLAYER)
+    # ══════════════════════════════════════════════════════════════════
+
+    def open_downloaded_videos_gallery(self, select_video_path: Optional[str] = None) -> None:
+        """Mở màn hình phát video đã tải xuống (YouTube-style player & 2 tabs)."""
+        if not hasattr(self, "_gallery_dialog") or self._gallery_dialog is None:
+            self._gallery_dialog = VideoGalleryDialog(
+                downloads_dir=self.output_dir,
+                initial_video_path=select_video_path,
+                parent=self,
+            )
+        else:
+            self._gallery_dialog.downloads_dir = self.output_dir
+            self._gallery_dialog.refresh_videos(select_path=select_video_path)
+
+        self._gallery_dialog.show()
+        self._gallery_dialog.raise_()
+        self._gallery_dialog.activateWindow()
 
     # ══════════════════════════════════════════════════════════════════
     # CLOSE EVENT

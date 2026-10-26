@@ -414,7 +414,7 @@ class LicenseManager:
                 exp_display = exp if exp else "V\u0129nh vi\u1ec5n"
                 return (
                     True,
-                    f"\U0001f451 B\u1ea3n quy\u1ec1n PRO \u2014 H\u1ea1n d\u00f9ng: {exp_display}",
+                    f"Bản quyền PRO — Hạn dùng: {exp_display}",
                     exp,
                     _TRIAL_TOTAL,
                 )
@@ -425,9 +425,13 @@ class LicenseManager:
                     pass
 
         remaining = self._get_trial_remaining()
+        if remaining > 0:
+            status_text = f"Dùng thử: còn {remaining}/{_TRIAL_TOTAL} lượt"
+        else:
+            status_text = f"Hết lượt dùng thử (0/{_TRIAL_TOTAL})"
         return (
             False,
-            f"\U0001f381 B\u1ea3n d\u00f9ng th\u1eed: C\u00f2n l\u1ea1i {remaining}/{_TRIAL_TOTAL} l\u01b0\u1ee3t t\u1ea3i",
+            status_text,
             "",
             remaining,
         )

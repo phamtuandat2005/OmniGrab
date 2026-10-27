@@ -7,18 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       engine:
-        description: 'Công cụ đóng gói (nuitka = C++ mã máy bảo mật cao, pyinstaller = script)'
+        description: 'Packaging engine (nuitka = C++ compiled machine code, pyinstaller = standard)'
         type: choice
         options:
           - nuitka
           - pyinstaller
         default: nuitka
       draft:
-        description: 'Tạo bản phát hành nháp (Draft release)'
+        description: 'Create draft release'
         type: boolean
         default: false
       prerelease:
-        description: 'Đánh dấu là bản phát hành thử nghiệm (Pre-release)'
+        description: 'Mark as pre-release'
         type: boolean
         default: false
 
@@ -69,23 +69,28 @@ jobs:
       - name: Install Inno Setup
         shell: powershell
         run: |
-          Write-Host "=== Cài đặt Inno Setup qua Chocolatey ==="
+          Write-Host "=== Installing Inno Setup ==="
           choco install innosetup -y --no-progress
           $innoDir = "C:\Program Files (x86)\Inno Setup 6"
           if (Test-Path $innoDir) {
               Add-Content $env:GITHUB_PATH "$innoDir"
-              Write-Host "Đã thêm Inno Setup vào PATH: $innoDir"
+              Write-Host "Added Inno Setup to PATH: $innoDir"
           }
 
       - name: Sync FFmpeg & FFprobe to Repository Root
         shell: powershell
         run: |
-          $ffmpegCmd = (Get-Command ffmpeg).Source
-          $ffprobeCmd = (Get-Command ffprobe).Source
-          Copy-Item $ffmpegCmd -Destination .\ffmpeg.exe -Force
-          Copy-Item $ffprobeCmd -Destination .\ffprobe.exe -Force
-          Write-Host "Đã đồng bộ FFmpeg: .\ffmpeg.exe ($((Get-Item .\ffmpeg.exe).Length) bytes)"
-          Write-Host "Đã đồng bộ FFprobe: .\ffprobe.exe ($((Get-Item .\ffprobe.exe).Length) bytes)"
+          Write-Host "=== Syncing FFmpeg & FFprobe ==="
+          $ffmpegPath = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+          $ffprobePath = (Get-Command ffprobe -ErrorAction SilentlyContinue).Source
+          if ($ffmpegPath) {
+              Copy-Item $ffmpegPath -Destination .\ffmpeg.exe -Force
+              Write-Host "FFmpeg copied: .\ffmpeg.exe"
+          }
+          if ($ffprobePath) {
+              Copy-Item $ffprobePath -Destination .\ffprobe.exe -Force
+              Write-Host "FFprobe copied: .\ffprobe.exe"
+          }
 
       - name: Install Python Dependencies
         shell: powershell
@@ -104,31 +109,31 @@ jobs:
           INPUT_ENGINE: ${{ inputs.engine }}
         run: |
           $engine = if ($env:INPUT_ENGINE -and $env:INPUT_ENGINE -ne "") { $env:INPUT_ENGINE } else { "nuitka" }
-          Write-Host "=== Bắt đầu đóng gói OmniGrab bằng công nghệ $engine ==="
+          Write-Host "=== Starting OmniGrab Packaging with $engine ==="
           python build_release.py --$engine
 
       - name: Verify Release Artifacts
         shell: powershell
         run: |
-          Write-Host "=== Kiểm tra tính toàn vẹn các file đầu ra ==="
+          Write-Host "=== Verifying Artifact Integrity ==="
           $installer = Get-ChildItem -Path dist_installer -Filter "OmniGrab.Setup.*.exe"
           $portable  = Get-ChildItem -Path dist_installer -Filter "OmniGrab_*_Portable.zip"
           
           if (-not $installer) {
-              Write-Error "Không tìm thấy bộ cài đặt OmniGrab.Setup.*.exe trong dist_installer!"
+              Write-Error "Installer OmniGrab.Setup.*.exe not found in dist_installer!"
               exit 1
           }
           if (-not $portable) {
-              Write-Error "Không tìm thấy file nén OmniGrab_*_Portable.zip trong dist_installer!"
+              Write-Error "Portable archive OmniGrab_*_Portable.zip not found in dist_installer!"
               exit 1
           }
-          Write-Host "Installer : $($installer.FullName) ($([math]::Round($installer.Length / 1MB, 2)) MB)"
-          Write-Host "Portable  : $($portable.FullName) ($([math]::Round($portable.Length / 1MB, 2)) MB)"
+          Write-Host "Installer : $($installer.FullName)"
+          Write-Host "Portable  : $($portable.FullName)"
 
       - name: Generate SHA-256 Checksums
         shell: powershell
         run: |
-          Write-Host "=== Tính mã băm bảo mật SHA256 ==="
+          Write-Host "=== Generating SHA256 Checksums ==="
           Set-Location dist_installer
           $checksumLines = @()
           Get-ChildItem -File -Include "*.exe", "*.zip" | ForEach-Object {
@@ -175,4 +180,3 @@ jobs:
             dist_installer/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

@@ -33,6 +33,7 @@ jobs:
   build-and-release:
     name: Build Windows Application (Nuitka C++) & Release
     runs-on: windows-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -66,11 +67,11 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
         id: setup-ffmpeg
 
-      - name: Install Inno Setup
+      - name: Install Inno Setup and Ccache
         shell: powershell
         run: |
-          Write-Host "=== Installing Inno Setup ==="
-          choco install innosetup -y --no-progress
+          Write-Host "=== Installing Inno Setup and Ccache ==="
+          choco install innosetup ccache -y --no-progress
           $innoDir = "C:\Program Files (x86)\Inno Setup 6"
           if (Test-Path $innoDir) {
               Add-Content $env:GITHUB_PATH "$innoDir"

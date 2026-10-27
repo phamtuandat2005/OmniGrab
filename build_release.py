@@ -433,20 +433,91 @@ def build_portable_zip() -> None:
         log(f"Không thể nén file ZIP: {e}", "WARN")
 
 
+def auto_bump_version(bump_kind: str) -> str:
+    """Tự động tăng version, ghi vào file và trả về version mới.
+    
+    Args:
+        bump_kind: 'patch' | 'minor' | 'major' | 'none'
+    Returns:
+        Version mới (string), hoặc version hiện tại nếu bump_kind='none'
+    """
+    bump_script = ROOT_DIR / "tools" / "bump_version.py"
+    if not bump_script.is_file():
+        log("Không tìm thấy tools/bump_version.py, bỏ qua bước tăng version.", "WARN")
+        return VERSION
+
+    result = subprocess.run(
+        [sys.executable, str(bump_script), bump_kind, "--ci", "--commit"],
+        cwd=str(ROOT_DIR),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        log(f"Lỗi khi tăng version: {result.stderr}", "ERROR")
+        sys.exit(result.returncode)
+
+    # Parse version mới từ output
+    import re
+    for line in result.stdout.splitlines():
+        m = re.search(r"new_version=([\d]+\.[\d]+\.[\d]+)", line)
+        if m:
+            return m.group(1)
+
+    # Fallback: đọc lại từ file
+    from importlib import reload
+    import core.version as _ver_mod
+    reload(_ver_mod)
+    return _ver_mod.APP_VERSION
+
+
 def main() -> None:
     ensure_venv()
 
-    # Nhận diện engine đóng gói: Nuitka C++ (mặc định) hoặc PyInstaller
+    # ------------------------------------------------------------------ #
+    # 1. Phân tích đối số dòng lệnh                                        #
+    # ------------------------------------------------------------------ #
+    args = sys.argv[1:]
+
+    # Engine đóng gói
     engine = "nuitka"
-    if "--pyinstaller" in sys.argv or os.environ.get("BUILD_ENGINE", "").lower() == "pyinstaller":
+    if "--pyinstaller" in args or os.environ.get("BUILD_ENGINE", "").lower() == "pyinstaller":
         engine = "pyinstaller"
-    elif "--nuitka" in sys.argv or os.environ.get("BUILD_ENGINE", "").lower() == "nuitka":
+    elif "--nuitka" in args or os.environ.get("BUILD_ENGINE", "").lower() == "nuitka":
         engine = "nuitka"
 
+    # Bump version (--bump / --bump-minor / --bump-major)
+    bump_kind = "none"
+    if "--bump" in args or "--bump-patch" in args:
+        bump_kind = "patch"
+    elif "--bump-minor" in args:
+        bump_kind = "minor"
+    elif "--bump-major" in args:
+        bump_kind = "major"
+    # Cho phép --bump=minor, --bump=major, --bump=patch
+    for arg in args:
+        if arg.startswith("--bump="):
+            bump_kind = arg.split("=", 1)[1].strip().lower()
+            break
+
+    # ------------------------------------------------------------------ #
+    # 2. Tự động tăng version nếu được yêu cầu                            #
+    # ------------------------------------------------------------------ #
+    global VERSION
+    if bump_kind != "none":
+        log(f"Tự động tăng version: {VERSION} -> ({bump_kind.upper()})...", "INFO")
+        new_ver = auto_bump_version(bump_kind)
+        VERSION = new_ver
+        log(f"Version mới: {VERSION}", "SUCCESS")
+    else:
+        log(f"Giữ nguyên version hiện tại: {VERSION}", "INFO")
+
     print("=" * 64)
-    print(f"      OmniGrab v{VERSION} - HỆ THỐNG ĐÓNG GÓI [{engine.upper()}]")
+    print(f"      OmniGrab v{VERSION} - HE THONG DONG GOI [{engine.upper()}]")
     print("=" * 64)
 
+    # ------------------------------------------------------------------ #
+    # 3. Quy trình đóng gói chính                                          #
+    # ------------------------------------------------------------------ #
     ffmpeg_src, ffprobe_src = check_prerequisites()
     prepare_runtime()
     clean_previous_builds()
@@ -461,18 +532,19 @@ def main() -> None:
     build_installer()
 
     print("\n" + "=" * 64)
-    print("                    HOÀN TẤT ĐÓNG GÓI!")
+    print("                    HOAN TAT DONG GOI!")
     print("=" * 64)
-    print(f"1. Thư mục chạy trực tiếp (Standalone App):")
+    print(f"1. Thu muc chay truc tiep (Standalone App):")
     print(f"   -> {DIST_DIR / 'OmniGrab.exe'}")
-    print(f"2. File cài đặt cho người dùng cuối (Installer Setup):")
+    print(f"2. File cai dat cho nguoi dung cuoi (Installer Setup):")
     print(f"   -> {OUT_INSTALLER_DIR / f'OmniGrab.Setup.{VERSION}.exe'}")
-    print(f"3. Bản nén không cần cài đặt (Portable ZIP):")
+    print(f"3. Ban nen khong can cai dat (Portable ZIP):")
     print(f"   -> {OUT_INSTALLER_DIR / f'OmniGrab_v{VERSION}_Portable.zip'}")
     print("=" * 64)
-    print("Người dùng tải file về cài đặt hoặc giải nén là chạy được ngay,")
-    print("đã tích hợp đầy đủ FFmpeg, FFprobe, Qt6, AI dubbing và tất cả thư viện!\n")
+    print("Nguoi dung tai file ve cai dat hoac giai nen la chay duoc ngay!")
+    print("Da tich hop FFmpeg, FFprobe, Qt6, AI dubbing va tat ca thu vien!\n")
 
 
 if __name__ == "__main__":
     main()
+

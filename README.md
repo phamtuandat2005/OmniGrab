@@ -212,7 +212,7 @@ Cookie là thông tin xác thực tương đương một phiên đăng nhập. C
 
 Ứng dụng tự kiểm tra GitHub Releases sau khi khởi động và có thể kiểm tra thủ công trong **Trợ giúp → Kiểm tra cập nhật...**. Nếu tìm thấy phiên bản mới, OmniGrab mở file Setup của release trong trình duyệt; người dùng xác nhận cài đặt. Việc kiểm tra cần Internet và không chặn khởi động nếu GitHub không truy cập được.
 
-Khi phát hành, tăng `APP_VERSION` trong `core/version.py`, đồng bộ `MyAppVersion` trong `setup.iss`, build lại Setup, tạo GitHub Release rồi đính kèm file có tên chính xác `OmniGrab.Setup.<version>.exe` (ví dụ `OmniGrab.Setup.4.0.1.exe`). Bộ kiểm tra so sánh version từ tên file Setup trong release, không phải Git tag; điều này cho phép tag release giữ quy ước hiện có miễn file cài đặt mang version sản phẩm đúng.
+Khi phát hành, tăng `APP_VERSION` trong `core/version.py`, đồng bộ `MyAppVersion` trong `setup.iss`, build lại Setup, tạo GitHub Release rồi đính kèm file có tên chính xác `OmniGrab.Setup.<version>.exe` (ví dụ `OmniGrab.Setup.4.0.2.exe`). Bộ kiểm tra so sánh version từ tên file Setup trong release, không phải Git tag; điều này cho phép tag release giữ quy ước hiện có miễn file cài đặt mang version sản phẩm đúng.
 
 ## Cấu trúc repository
 

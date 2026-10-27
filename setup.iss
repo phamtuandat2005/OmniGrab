@@ -3,7 +3,7 @@
 
 #define MyAppName "OmniGrab"
 #ifndef MyAppVersion
-  #define MyAppVersion "4.0.1"
+  #define MyAppVersion "4.0.2"
 #endif
 #define MyAppPublisher "OmniGrab Team"
 #define MyAppURL "https://github.com/phamtuandat2005/OmniGrab"

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from typing import Optional, Tuple
 
 from core.version import APP_VERSION
 
@@ -96,38 +97,57 @@ def check_prerequisites() -> tuple[Path, Path]:
         log("Cần Python 64-bit để tạo bản phát hành Windows x64!", "ERROR")
         sys.exit(1)
 
-    ffmpeg_path = ROOT_DIR / "ffmpeg.exe"
-    ffprobe_path = ROOT_DIR / "ffprobe.exe"
+    def _locate(bin_name: str) -> Optional[Path]:
+        candidates = [
+            ROOT_DIR / bin_name,
+            ROOT_DIR / "tools" / "ffmpeg" / "bin" / bin_name,
+            ROOT_DIR / "tools" / bin_name,
+            Path("C:/ProgramData/chocolatey/lib/ffmpeg-full/tools/ffmpeg/bin") / bin_name,
+            Path("C:/ProgramData/chocolatey/lib/ffmpeg/tools/ffmpeg/bin") / bin_name,
+            Path("C:/ProgramData/chocolatey/bin") / bin_name,
+            Path("C:/tools/ffmpeg/bin") / bin_name,
+            Path("C:/Program Files/FFmpeg/bin") / bin_name,
+        ]
+        for c in candidates:
+            if c.is_file() and c.stat().st_size > 100_000:
+                return c
+        found = shutil.which(bin_name)
+        if found:
+            p = Path(found)
+            if p.is_file():
+                return p
+        return None
 
-    if not ffmpeg_path.is_file():
-        alt = ROOT_DIR / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
-        if alt.is_file():
-            ffmpeg_path = alt
-        else:
-            sys_ff = shutil.which("ffmpeg")
-            if sys_ff and Path(sys_ff).is_file():
-                ffmpeg_path = Path(sys_ff)
-                log(f"Đã tìm thấy FFmpeg từ PATH hệ thống: {ffmpeg_path}", "INFO")
-            else:
-                log("Không tìm thấy ffmpeg.exe trong thư mục gốc, tools/ffmpeg/bin, hoặc PATH hệ thống!", "ERROR")
-                sys.exit(1)
+    ffmpeg_src = _locate("ffmpeg.exe")
+    if not ffmpeg_src:
+        log("Không tìm thấy ffmpeg.exe trong thư mục gốc, tools/ffmpeg/bin, hoặc PATH hệ thống!", "ERROR")
+        sys.exit(1)
 
-    if not ffprobe_path.is_file():
-        alt = ROOT_DIR / "tools" / "ffmpeg" / "bin" / "ffprobe.exe"
-        if alt.is_file():
-            ffprobe_path = alt
-        else:
-            sys_probe = shutil.which("ffprobe")
-            if sys_probe and Path(sys_probe).is_file():
-                ffprobe_path = Path(sys_probe)
-                log(f"Đã tìm thấy FFprobe từ PATH hệ thống: {ffprobe_path}", "INFO")
-            else:
-                log("Không tìm thấy ffprobe.exe trong thư mục gốc, tools/ffmpeg/bin, hoặc PATH hệ thống!", "ERROR")
-                sys.exit(1)
+    ffprobe_src = _locate("ffprobe.exe")
+    if not ffprobe_src:
+        log("Không tìm thấy ffprobe.exe trong thư mục gốc, tools/ffmpeg/bin, hoặc PATH hệ thống!", "ERROR")
+        sys.exit(1)
 
-    log(f"Đã xác nhận FFmpeg: {ffmpeg_path}", "SUCCESS")
-    log(f"Đã xác nhận FFprobe: {ffprobe_path}", "SUCCESS")
-    return ffmpeg_path, ffprobe_path
+    # Đảm bảo ffmpeg.exe và ffprobe.exe luôn có mặt ngay tại thư mục gốc dự án cho PyInstaller spec
+    root_ffmpeg = ROOT_DIR / "ffmpeg.exe"
+    if not root_ffmpeg.is_file() or root_ffmpeg.stat().st_size != ffmpeg_src.stat().st_size:
+        try:
+            shutil.copy2(ffmpeg_src, root_ffmpeg)
+            ffmpeg_src = root_ffmpeg
+        except Exception:
+            pass
+
+    root_ffprobe = ROOT_DIR / "ffprobe.exe"
+    if not root_ffprobe.is_file() or root_ffprobe.stat().st_size != ffprobe_src.stat().st_size:
+        try:
+            shutil.copy2(ffprobe_src, root_ffprobe)
+            ffprobe_src = root_ffprobe
+        except Exception:
+            pass
+
+    log(f"Đã xác nhận FFmpeg: {ffmpeg_src}", "SUCCESS")
+    log(f"Đã xác nhận FFprobe: {ffprobe_src}", "SUCCESS")
+    return ffmpeg_src, ffprobe_src
 
 
 def prepare_runtime() -> None:
@@ -212,6 +232,8 @@ def run_nuitka() -> None:
         "--include-module=PyQt6.QtMultimediaWidgets",
         "--include-module=PyQt6.QtSvg",
         "--include-module=PyQt6.sip",
+        "--include-package=ui",
+        "--include-package=core",
         "--include-package=yt_dlp",
         "--include-package=curl_cffi",
         "--include-package=f2",
@@ -226,12 +248,13 @@ def run_nuitka() -> None:
         "--include-package=requests",
         "--include-package=av",
         "--include-package=onnxruntime",
+        "--include-package=win32com",
         "--include-package-data=f2",
         "--include-package-data=curl_cffi",
+        "--include-package-data=faster_whisper",
+        "--include-package-data=ctranslate2",
         f"--windows-icon-from-ico={ROOT_DIR / 'assets' / 'icon.ico'}",
         f"--include-data-dir={ROOT_DIR / 'assets'}=assets",
-        f"--include-data-dir={ROOT_DIR / 'ui'}=ui",
-        f"--include-data-dir={ROOT_DIR / 'core'}=core",
         "--windows-company-name=OmniGrab",
         "--windows-product-name=OmniGrab",
         f"--windows-file-version={VERSION}.0",
@@ -251,8 +274,13 @@ def run_nuitka() -> None:
         sys.exit(result.returncode)
 
     # Nuitka --standalone thường sinh thư mục dist/main.dist hoặc dist/OmniGrab.dist
-    for candidate in [ROOT_DIR / "dist" / "main.dist", ROOT_DIR / "dist" / "OmniGrab.dist"]:
-        if candidate.is_dir():
+    candidates = [ROOT_DIR / "dist" / "main.dist", ROOT_DIR / "dist" / "OmniGrab.dist"]
+    if (ROOT_DIR / "dist").is_dir():
+        for p in (ROOT_DIR / "dist").glob("*.dist"):
+            if p not in candidates:
+                candidates.append(p)
+    for candidate in candidates:
+        if candidate.is_dir() and candidate.resolve() != DIST_DIR.resolve():
             if DIST_DIR.exists():
                 shutil.rmtree(DIST_DIR, ignore_errors=True)
             candidate.rename(DIST_DIR)

@@ -938,14 +938,6 @@ class MainWindow(QMainWindow):
         act_cookie.triggered.connect(self._on_choose_cookie)
         menu_file.addAction(act_cookie)
 
-        act_tiktok_cookie = QAction("Nạp file Cookie TikTok (.txt)...", self)
-        act_tiktok_cookie.triggered.connect(self._on_choose_tiktok_cookie)
-        menu_file.addAction(act_tiktok_cookie)
-
-        act_yt_cookie = QAction("Nạp file Cookie YouTube (.txt)...", self)
-        act_yt_cookie.triggered.connect(self._on_choose_youtube_cookies)
-        menu_file.addAction(act_yt_cookie)
-
         act_import = QAction("Nhập danh sách link từ file...", self)
         act_import.triggered.connect(self._on_import_file)
         menu_file.addAction(act_import)
@@ -1748,6 +1740,10 @@ class MainWindow(QMainWindow):
         )
         if f:
             self.cookies_path = f
+            if not getattr(self, "tiktok_cookies_path", ""):
+                self.tiktok_cookies_path = f
+            if not getattr(self, "youtube_cookies_path", ""):
+                self.youtube_cookies_path = f
             self._save_settings()
             self._update_cookie_ui()
             self._append_log("HỆ THỐNG", f"Đã nạp cookie: {os.path.basename(f)}")

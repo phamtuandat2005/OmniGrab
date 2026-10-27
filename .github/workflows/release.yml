@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       engine:
-        description: 'Công cụ đóng gói (nuitka = C++ bảo mật cao, pyinstaller = tiêu chuẩn)'
+        description: 'Công cụ đóng gói (nuitka = C++ mã máy bảo mật cao, pyinstaller = script)'
         type: choice
         options:
           - nuitka
@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   build-and-release:
-    name: Build Windows C++ Binary & Release
+    name: Build Windows Application (Nuitka C++) & Release
     runs-on: windows-latest
     steps:
       - name: Checkout Source Code
@@ -46,14 +46,13 @@ jobs:
           architecture: 'x64'
           cache: 'pip'
 
-      - name: Cache Build Runtime Assets (Playwright & Whisper Models)
-        uses: actions/cache@v4
-        with:
-          path: build_runtime
-          key: ${{ runner.os }}-runtime-assets-v1
+      - name: Set up MSVC C++ Compiler (for Nuitka C++)
+        uses: ilammy/msvc-dev-cmd@v1
+        if: ${{ github.event_name == 'push' || inputs.engine == 'nuitka' || inputs.engine == '' }}
 
       - name: Cache Nuitka Compilation Cache
         uses: actions/cache@v4
+        if: ${{ github.event_name == 'push' || inputs.engine == 'nuitka' || inputs.engine == '' }}
         with:
           path: |
             ~\AppData\Local\Nuitka\Nuitka\Cache
@@ -61,46 +60,52 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuitka-cache-
 
-      - name: Install System Packaging Tools (Inno Setup & FFmpeg)
+      - name: Setup FFmpeg and FFprobe
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+        id: setup-ffmpeg
+
+      - name: Install Inno Setup
         shell: powershell
         run: |
-          Write-Host "=== Cài đặt Inno Setup và FFmpeg qua Chocolatey ==="
-          choco install innosetup -y
-          choco install ffmpeg -y
-          
-          # Đưa Inno Setup vào PATH môi trường
+          Write-Host "=== Cài đặt Inno Setup qua Chocolatey ==="
+          choco install innosetup -y --no-progress
           $innoDir = "C:\Program Files (x86)\Inno Setup 6"
           if (Test-Path $innoDir) {
               Add-Content $env:GITHUB_PATH "$innoDir"
               Write-Host "Đã thêm Inno Setup vào PATH: $innoDir"
           }
 
-          # Đồng bộ FFmpeg và FFprobe vào thư mục gốc repository
-          $ffmpegPath = (Get-Command ffmpeg).Source
-          $ffprobePath = (Get-Command ffprobe).Source
-          Copy-Item $ffmpegPath -Destination .\ffmpeg.exe -Force
-          Copy-Item $ffprobePath -Destination .\ffprobe.exe -Force
-          Write-Host "Đã chuẩn bị FFmpeg: .\ffmpeg.exe"
-          Write-Host "Đã chuẩn bị FFprobe: .\ffprobe.exe"
+      - name: Sync FFmpeg & FFprobe to Repository Root
+        shell: powershell
+        run: |
+          $ffmpegCmd = (Get-Command ffmpeg).Source
+          $ffprobeCmd = (Get-Command ffprobe).Source
+          Copy-Item $ffmpegCmd -Destination .\ffmpeg.exe -Force
+          Copy-Item $ffprobeCmd -Destination .\ffprobe.exe -Force
+          Write-Host "Đã đồng bộ FFmpeg: .\ffmpeg.exe ($((Get-Item .\ffmpeg.exe).Length) bytes)"
+          Write-Host "Đã đồng bộ FFprobe: .\ffprobe.exe ($((Get-Item .\ffprobe.exe).Length) bytes)"
 
-      - name: Install Python Dependencies & Nuitka C++ Compiler
+      - name: Install Python Dependencies
         shell: powershell
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt nuitka zstandard pyinstaller
+          pip install -r requirements.txt pyinstaller nuitka zstandard
 
       - name: Prepare Playwright Browsers
         shell: powershell
         run: |
           python -m playwright install chromium
 
-      - name: Execute Build Release Pipeline (Nuitka C++)
+      - name: Execute Build Release Pipeline
         shell: powershell
         env:
-          BUILD_ENGINE: ${{ github.event.inputs.engine || 'nuitka' }}
+          INPUT_ENGINE: ${{ inputs.engine }}
         run: |
-          Write-Host "=== Bắt đầu đóng gói OmniGrab bằng công nghệ $env:BUILD_ENGINE ==="
-          python build_release.py --$env:BUILD_ENGINE
+          $engine = if ($env:INPUT_ENGINE -and $env:INPUT_ENGINE -ne "") { $env:INPUT_ENGINE } else { "nuitka" }
+          Write-Host "=== Bắt đầu đóng gói OmniGrab bằng công nghệ $engine ==="
+          python build_release.py --$engine
 
       - name: Verify Release Artifacts
         shell: powershell
@@ -170,3 +175,4 @@ jobs:
             dist_installer/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

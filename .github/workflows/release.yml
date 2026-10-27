@@ -135,16 +135,22 @@ jobs:
         shell: powershell
         run: |
           Write-Host "=== Generating SHA256 Checksums ==="
-          Set-Location dist_installer
+          $files = Get-ChildItem -Path dist_installer -File | Where-Object { $_.Name -like "*.exe" -or $_.Name -like "*.zip" }
           $checksumLines = @()
-          Get-ChildItem -File -Include "*.exe", "*.zip" | ForEach-Object {
-              $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash
-              $line = "$hash  $($_.Name)"
+          foreach ($file in $files) {
+              $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash
+              $line = "$hash  $($file.Name)"
               $checksumLines += $line
               Write-Host $line
           }
-          $checksumLines | Out-File -FilePath SHA256SUMS.txt -Encoding utf8
-          Set-Location ..
+          $checksumLines | Out-File -FilePath dist_installer\SHA256SUMS.txt -Encoding utf8
+          
+          $sumFile = Get-Item dist_installer\SHA256SUMS.txt
+          if ($sumFile.Length -eq 0) {
+              Write-Error "SHA256SUMS.txt is empty! No binaries were hashed."
+              exit 1
+          }
+          Write-Host "SHA256SUMS.txt created successfully: $($sumFile.Length) bytes"
 
       - name: Upload Workflow Artifacts (Internal Storage)
         uses: actions/upload-artifact@v4

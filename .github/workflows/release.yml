@@ -73,7 +73,7 @@ jobs:
           
           $newVer = python -c "from core.version import APP_VERSION; print(APP_VERSION)"
           Write-Host "New version: $newVer"
-          echo "new_version=$newVer" >> $env:GITHUB_OUTPUT
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "new_version=$newVer`n", [System.Text.UTF8Encoding]::new($false))
           
           git push origin HEAD:main
 
@@ -83,7 +83,7 @@ jobs:
         run: |
           $ver = python -c "from core.version import APP_VERSION; print(APP_VERSION)"
           Write-Host "Building version: $ver"
-          echo "app_version=$ver" >> $env:GITHUB_OUTPUT
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "app_version=$ver`n", [System.Text.UTF8Encoding]::new($false))
 
       - name: Set up MSVC C++ Compiler (for Nuitka C++)
         uses: ilammy/msvc-dev-cmd@v1
@@ -217,8 +217,8 @@ jobs:
           } else {
               $tagName = "v$appVer"
           }
-          echo "tag_name=$tagName" >> $env:GITHUB_OUTPUT
-          echo "app_version=$appVer" >> $env:GITHUB_OUTPUT
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "tag_name=$tagName`n", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "app_version=$appVer`n", [System.Text.UTF8Encoding]::new($false))
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

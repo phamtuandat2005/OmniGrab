@@ -2179,28 +2179,10 @@ class MainWindow(QMainWindow):
         self._show_available_update(update)
 
     def _show_available_update(self, update: ReleaseUpdate) -> None:
-        message = (
-            f"Đang dùng: v{APP_VERSION}\n"
-            f"Phiên bản mới: v{update.version}\n\n"
-            "Bạn có muốn tải bộ cài đặt mới từ GitHub không?"
-        )
-        if update.notes:
-            message += f"\n\nThông tin phát hành:\n{update.notes}"
+        from ui.update_dialog import UpdateDialog
 
-        choice = QMessageBox.question(
-            self,
-            "Có phiên bản OmniGrab mới",
-            message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if choice == QMessageBox.StandardButton.Yes:
-            if not QDesktopServices.openUrl(QUrl(update.download_url)):
-                QMessageBox.warning(
-                    self,
-                    "Không thể mở liên kết",
-                    f"Không mở được trang tải bộ cài đặt:\n{update.release_url}",
-                )
+        dlg = UpdateDialog(update, parent=self)
+        dlg.exec()
 
     def _on_about(self) -> None:
         dlg = QDialog(self)

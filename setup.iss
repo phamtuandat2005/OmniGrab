@@ -37,6 +37,8 @@ DisableWelcomePage=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyAppExeName}
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

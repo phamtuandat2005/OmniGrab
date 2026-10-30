@@ -16,6 +16,7 @@ class ReleaseUpdate(NamedTuple):
     download_url: str
     release_url: str
     notes: str
+    size: int = 0
 
 
 def _version_key(version: str) -> tuple[int, int, int]:
@@ -42,7 +43,7 @@ def find_release_update(release: Any, current_version: str) -> ReleaseUpdate | N
     if not isinstance(assets, list):
         raise ValueError("Release mới nhất không có danh sách file tải xuống.")
 
-    installers: list[tuple[tuple[int, int, int], str, str]] = []
+    installers: list[tuple[tuple[int, int, int], str, str, int]] = []
     for asset in assets:
         if not isinstance(asset, dict):
             continue
@@ -54,14 +55,16 @@ def find_release_update(release: Any, current_version: str) -> ReleaseUpdate | N
         download_url = asset.get("browser_download_url")
         if not _is_github_https_url(download_url):
             continue
-        installers.append((_version_key(version), version, download_url))
+        raw_size = asset.get("size")
+        size_int = int(raw_size) if isinstance(raw_size, (int, float)) and raw_size > 0 else 0
+        installers.append((_version_key(version), version, download_url, size_int))
 
     if not installers:
         raise ValueError(
             "Release mới nhất chưa đính kèm file OmniGrab.Setup.x.y.z.exe."
         )
 
-    version_key, version, download_url = max(installers, key=lambda item: item[0])
+    version_key, version, download_url, size_int = max(installers, key=lambda item: item[0])
     if version_key <= current_key:
         return None
 
@@ -75,4 +78,5 @@ def find_release_update(release: Any, current_version: str) -> ReleaseUpdate | N
         download_url=download_url,
         release_url=release_url,
         notes=notes.strip()[:1500] if isinstance(notes, str) and notes.strip() else "",
+        size=size_int,
     )
